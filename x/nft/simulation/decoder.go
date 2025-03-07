@@ -4,27 +4,36 @@ import (
 	"bytes"
 	"fmt"
 
-	"github.com/cosmos/cosmos-sdk/codec"
+	"cosmossdk.io/core/codec"
+	"cosmossdk.io/x/nft"
+	"cosmossdk.io/x/nft/keeper"
+
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/types/kv"
-	"github.com/cosmos/cosmos-sdk/x/nft"
-	"github.com/cosmos/cosmos-sdk/x/nft/keeper"
 )
 
-// NewDecodeStore returns a decoder function closure that umarshals the KVPair's
+// NewDecodeStore returns a decoder function closure that unmarshals the KVPair's
 // Value to the corresponding nft type.
 func NewDecodeStore(cdc codec.Codec) func(kvA, kvB kv.Pair) string {
 	return func(kvA, kvB kv.Pair) string {
 		switch {
 		case bytes.Equal(kvA.Key[:1], keeper.ClassKey):
 			var classA, classB nft.Class
-			cdc.MustUnmarshal(kvA.Value, &classA)
-			cdc.MustUnmarshal(kvB.Value, &classB)
+			if err := cdc.Unmarshal(kvA.Value, &classA); err != nil {
+				panic(err)
+			}
+			if err := cdc.Unmarshal(kvB.Value, &classB); err != nil {
+				panic(err)
+			}
 			return fmt.Sprintf("%v\n%v", classA, classB)
 		case bytes.Equal(kvA.Key[:1], keeper.NFTKey):
 			var nftA, nftB nft.NFT
-			cdc.MustUnmarshal(kvA.Value, &nftA)
-			cdc.MustUnmarshal(kvB.Value, &nftB)
+			if err := cdc.Unmarshal(kvA.Value, &nftA); err != nil {
+				panic(err)
+			}
+			if err := cdc.Unmarshal(kvB.Value, &nftB); err != nil {
+				panic(err)
+			}
 			return fmt.Sprintf("%v\n%v", nftA, nftB)
 		case bytes.Equal(kvA.Key[:1], keeper.NFTOfClassByOwnerKey):
 			return fmt.Sprintf("%v\n%v", kvA.Value, kvB.Value)

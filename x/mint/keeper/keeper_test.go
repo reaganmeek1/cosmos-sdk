@@ -1,38 +1,51 @@
 package keeper_test
 
 import (
+	"context"
 	"testing"
 
-	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/suite"
+	"go.uber.org/mock/gomock"
 
+	"cosmossdk.io/core/appmodule"
+	coretesting "cosmossdk.io/core/testing"
+	"cosmossdk.io/math"
+	storetypes "cosmossdk.io/store/types"
+	"cosmossdk.io/x/mint"
+	"cosmossdk.io/x/mint/keeper"
+	minttestutil "cosmossdk.io/x/mint/testutil"
+	"cosmossdk.io/x/mint/types"
+
+	codectestutil "github.com/cosmos/cosmos-sdk/codec/testutil"
+	"github.com/cosmos/cosmos-sdk/runtime"
 	"github.com/cosmos/cosmos-sdk/testutil"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	moduletestutil "github.com/cosmos/cosmos-sdk/types/module/testutil"
 	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
-	govtypes "github.com/cosmos/cosmos-sdk/x/gov/types"
-	"github.com/cosmos/cosmos-sdk/x/mint"
-	"github.com/cosmos/cosmos-sdk/x/mint/keeper"
-	minttestutil "github.com/cosmos/cosmos-sdk/x/mint/testutil"
-	"github.com/cosmos/cosmos-sdk/x/mint/types"
 )
 
-type IntegrationTestSuite struct {
+const govModuleNameStr = "cosmos10d07y265gmmuvt4z0w9aw880jnsr700j6zn9kn"
+
+type KeeperTestSuite struct {
 	suite.Suite
 
-	mintKeeper keeper.Keeper
-	ctx        sdk.Context
-	msgServer  types.MsgServer
+	mintKeeper    *keeper.Keeper
+	ctx           sdk.Context
+	msgServer     types.MsgServer
+	stakingKeeper *minttestutil.MockStakingKeeper
+	bankKeeper    *minttestutil.MockBankKeeper
 }
 
 func TestKeeperTestSuite(t *testing.T) {
-	suite.Run(t, new(IntegrationTestSuite))
+	suite.Run(t, new(KeeperTestSuite))
 }
 
-func (s *IntegrationTestSuite) SetupTest() {
-	encCfg := moduletestutil.MakeTestEncodingConfig(mint.AppModuleBasic{})
-	key := sdk.NewKVStoreKey(types.StoreKey)
-	testCtx := testutil.DefaultContextWithDB(s.T(), key, sdk.NewTransientStoreKey("transient_test"))
+func (s *KeeperTestSuite) SetupTest() {
+	encCfg := moduletestutil.MakeTestEncodingConfig(codectestutil.CodecOptions{}, mint.AppModule{})
+	key := storetypes.NewKVStoreKey(types.StoreKey)
+	storeService := runtime.NewKVStoreService(key)
+	env := runtime.NewEnvironment(storeService, coretesting.NewNopLogger())
+	testCtx := testutil.DefaultContextWithDB(s.T(), key, storetypes.NewTransientStoreKey("transient_test"))
 	s.ctx = testCtx.Ctx
 
 	// gomock initializations
@@ -45,68 +58,111 @@ func (s *IntegrationTestSuite) SetupTest() {
 
 	s.mintKeeper = keeper.NewKeeper(
 		encCfg.Codec,
-		key,
-		stakingKeeper,
+		env,
 		accountKeeper,
 		bankKeeper,
 		authtypes.FeeCollectorName,
-		authtypes.NewModuleAddress(govtypes.ModuleName).String(),
+		govModuleNameStr,
 	)
+	s.stakingKeeper = stakingKeeper
+	s.bankKeeper = bankKeeper
 
-	err := s.mintKeeper.SetParams(s.ctx, types.DefaultParams())
-	s.Require().NoError(err)
-	s.mintKeeper.SetMinter(s.ctx, types.DefaultInitialMinter())
+	err := s.mintKeeper.Params.Set(s.ctx, types.DefaultParams())
+	s.NoError(err)
 
+	s.NoError(s.mintKeeper.Minter.Set(s.ctx, types.DefaultInitialMinter()))
 	s.msgServer = keeper.NewMsgServerImpl(s.mintKeeper)
 }
 
-func (s *IntegrationTestSuite) TestParams() {
-	testCases := []struct {
-		name      string
-		input     types.Params
-		expectErr bool
-	}{
-		{
-			name: "set invalid params",
-			input: types.Params{
-				MintDenom:           sdk.DefaultBondDenom,
-				InflationRateChange: sdk.NewDecWithPrec(-13, 2),
-				InflationMax:        sdk.NewDecWithPrec(20, 2),
-				InflationMin:        sdk.NewDecWithPrec(7, 2),
-				GoalBonded:          sdk.NewDecWithPrec(67, 2),
-				BlocksPerYear:       uint64(60 * 60 * 8766 / 5),
-			},
-			expectErr: true,
-		},
-		{
-			name: "set full valid params",
-			input: types.Params{
-				MintDenom:           sdk.DefaultBondDenom,
-				InflationRateChange: sdk.NewDecWithPrec(8, 2),
-				InflationMax:        sdk.NewDecWithPrec(20, 2),
-				InflationMin:        sdk.NewDecWithPrec(2, 2),
-				GoalBonded:          sdk.NewDecWithPrec(37, 2),
-				BlocksPerYear:       uint64(60 * 60 * 8766 / 5),
-			},
-			expectErr: false,
-		},
-	}
+func (s *KeeperTestSuite) TestDefaultMintFn() {
+	s.stakingKeeper.EXPECT().StakingTokenSupply(s.ctx).Return(math.NewIntFromUint64(100000000000), nil).AnyTimes()
+	bondedRatio := math.LegacyNewDecWithPrec(15, 2)
+	s.stakingKeeper.EXPECT().BondedRatio(s.ctx).Return(bondedRatio, nil).AnyTimes()
+	s.bankKeeper.EXPECT().MintCoins(s.ctx, types.ModuleName, sdk.NewCoins(sdk.NewCoin("stake", math.NewInt(792)))).Return(nil)
+	s.bankKeeper.EXPECT().SendCoinsFromModuleToModule(s.ctx, types.ModuleName, authtypes.FeeCollectorName, gomock.Any()).Return(nil)
+	err := s.mintKeeper.SetMintFn(keeper.DefaultMintFn(types.DefaultInflationCalculationFn, s.stakingKeeper, s.mintKeeper))
+	s.NoError(err)
 
-	for _, tc := range testCases {
-		tc := tc
+	minter, err := s.mintKeeper.Minter.Get(s.ctx)
+	s.NoError(err)
 
-		s.Run(tc.name, func() {
-			expected := s.mintKeeper.GetParams(s.ctx)
-			err := s.mintKeeper.SetParams(s.ctx, tc.input)
-			if tc.expectErr {
-				s.Require().Error(err)
-			} else {
-				expected = tc.input
-				s.Require().NoError(err)
-			}
+	err = s.mintKeeper.MintFn(s.ctx, &minter, "block", 0)
+	s.NoError(err)
 
-			p := s.mintKeeper.GetParams(s.ctx)
-			s.Require().Equal(expected, p)
-		})
-	}
+	// set a maxSupply and call again. totalSupply will be bigger than maxSupply.
+	params, err := s.mintKeeper.Params.Get(s.ctx)
+	s.NoError(err)
+	params.MaxSupply = math.NewInt(10000000000)
+	err = s.mintKeeper.Params.Set(s.ctx, params)
+	s.NoError(err)
+
+	err = s.mintKeeper.MintFn(s.ctx, &minter, "block", 0)
+	s.NoError(err)
+
+	// modify max supply to be almost reached
+	// modify blocksPerYear to mint 2053 coins per block
+	// we tried to mint 2053stake, but we only get to mint 2000stake
+	params, err = s.mintKeeper.Params.Get(s.ctx)
+	s.NoError(err)
+	params.MaxSupply = math.NewInt(100000000000 + 2000)
+	params.BlocksPerYear = 2434275
+	err = s.mintKeeper.Params.Set(s.ctx, params)
+	s.NoError(err)
+
+	s.bankKeeper.EXPECT().MintCoins(s.ctx, types.ModuleName, sdk.NewCoins(sdk.NewCoin("stake", math.NewInt(2000)))).Return(nil)
+	s.bankKeeper.EXPECT().SendCoinsFromModuleToModule(s.ctx, types.ModuleName, authtypes.FeeCollectorName, gomock.Any()).Return(nil)
+
+	err = s.mintKeeper.MintFn(s.ctx, &minter, "block", 0)
+	s.NoError(err)
+}
+
+func (s *KeeperTestSuite) TestBeginBlocker() {
+	s.stakingKeeper.EXPECT().StakingTokenSupply(s.ctx).Return(math.NewIntFromUint64(100000000000), nil).AnyTimes()
+	bondedRatio := math.LegacyNewDecWithPrec(15, 2)
+	s.stakingKeeper.EXPECT().BondedRatio(s.ctx).Return(bondedRatio, nil).AnyTimes()
+	s.bankKeeper.EXPECT().MintCoins(s.ctx, types.ModuleName, sdk.NewCoins(sdk.NewCoin("stake", math.NewInt(792)))).Return(nil)
+	s.bankKeeper.EXPECT().SendCoinsFromModuleToModule(s.ctx, types.ModuleName, authtypes.FeeCollectorName, gomock.Any()).Return(nil)
+	err := s.mintKeeper.SetMintFn(keeper.DefaultMintFn(types.DefaultInflationCalculationFn, s.stakingKeeper, s.mintKeeper))
+	s.NoError(err)
+	// get minter (it should get modified afterwards)
+	minter, err := s.mintKeeper.Minter.Get(s.ctx)
+	s.NoError(err)
+
+	err = s.mintKeeper.BeginBlocker(s.ctx)
+	s.NoError(err)
+
+	// get minter again and compare
+	newMinter, err := s.mintKeeper.Minter.Get(s.ctx)
+	s.NoError(err)
+	s.NotEqual(minter, newMinter)
+
+	// now use a mintfn that doesn't do anything
+	err = s.mintKeeper.SetMintFn(func(ctx context.Context, env appmodule.Environment, minter *types.Minter, epochId string, epochNumber int64) error {
+		return nil
+	})
+	s.NoError(err)
+	err = s.mintKeeper.BeginBlocker(s.ctx)
+	s.NoError(err)
+
+	// get minter again and compare
+	unchangedMinter, err := s.mintKeeper.Minter.Get(s.ctx)
+	s.NoError(err)
+	s.Equal(newMinter, unchangedMinter)
+}
+
+func (s *KeeperTestSuite) TestMigrator() {
+	m := keeper.NewMigrator(s.mintKeeper)
+	s.NoError(m.Migrate1to2(s.ctx)) // just to get the coverage up
+
+	// set max supply to one and migrate (should get it to zero)
+	params, err := s.mintKeeper.Params.Get(s.ctx)
+	s.NoError(err)
+	params.MaxSupply = math.OneInt()
+	s.NoError(s.mintKeeper.Params.Set(s.ctx, params))
+
+	s.NoError(m.Migrate2to3(s.ctx))
+
+	newParams, err := s.mintKeeper.Params.Get(s.ctx)
+	s.NoError(err)
+	s.Equal(math.ZeroInt(), newParams.MaxSupply)
 }

@@ -1,15 +1,15 @@
 package version_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"runtime"
 	"testing"
 
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tendermint/tendermint/libs/cli"
 
+	"github.com/cosmos/cosmos-sdk/client/flags"
 	"github.com/cosmos/cosmos-sdk/testutil"
 	"github.com/cosmos/cosmos-sdk/version"
 )
@@ -45,21 +45,35 @@ func Test_runVersionCmd(t *testing.T) {
 	_, mockOut := testutil.ApplyMockIO(cmd)
 
 	cmd.SetArgs([]string{
-		fmt.Sprintf("--%s=''", cli.OutputFlag),
+		fmt.Sprintf("--%s=''", flags.FlagOutput),
 		"--long=false",
 	})
 
 	require.NoError(t, cmd.Execute())
-	assert.Equal(t, "\n", mockOut.String())
+	require.Equal(t, "\n", mockOut.String())
 	mockOut.Reset()
 
 	cmd.SetArgs([]string{
-		fmt.Sprintf("--%s=json", cli.OutputFlag), "--long=true",
+		fmt.Sprintf("--%s=json", flags.FlagOutput), "--long=true",
 	})
 
 	info := version.NewInfo()
 	stringInfo, err := json.Marshal(info)
+
+	extraInfo := &version.ExtraInfo{"key1": "value1"}
+	ctx := context.WithValue(context.Background(), version.ContextKey{}, extraInfo)
+
 	require.NoError(t, err)
 	require.NoError(t, cmd.Execute())
-	assert.Equal(t, string(stringInfo)+"\n", mockOut.String())
+
+	extraInfoFromContext := ctx.Value(version.ContextKey{})
+	require.NotNil(t, extraInfoFromContext)
+
+	castedExtraInfo, ok := extraInfoFromContext.(*version.ExtraInfo)
+	require.True(t, ok)
+
+	key1Value := (*castedExtraInfo)["key1"]
+	require.Equal(t, "value1", key1Value)
+
+	require.Equal(t, string(stringInfo)+"\n", mockOut.String())
 }

@@ -3,11 +3,12 @@ package types
 import (
 	"encoding/json"
 
-	"github.com/cosmos/cosmos-sdk/codec"
-	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
+	gogoprotoany "github.com/cosmos/gogoproto/types/any"
+
+	"cosmossdk.io/core/codec"
 )
 
-// NewGenesisState creates a new GenesisState instanc e
+// NewGenesisState creates a new GenesisState instance
 func NewGenesisState(params Params, validators []Validator, delegations []Delegation) *GenesisState {
 	return &GenesisState{
 		Params:      params,
@@ -29,14 +30,16 @@ func GetGenesisStateFromAppState(cdc codec.JSONCodec, appState map[string]json.R
 	var genesisState GenesisState
 
 	if appState[ModuleName] != nil {
-		cdc.MustUnmarshalJSON(appState[ModuleName], &genesisState)
+		if err := cdc.UnmarshalJSON(appState[ModuleName], &genesisState); err != nil {
+			panic(err)
+		}
 	}
 
 	return &genesisState
 }
 
 // UnpackInterfaces implements UnpackInterfacesMessage.UnpackInterfaces
-func (g GenesisState) UnpackInterfaces(c codectypes.AnyUnpacker) error {
+func (g GenesisState) UnpackInterfaces(c gogoprotoany.AnyUnpacker) error {
 	for i := range g.Validators {
 		if err := g.Validators[i].UnpackInterfaces(c); err != nil {
 			return err

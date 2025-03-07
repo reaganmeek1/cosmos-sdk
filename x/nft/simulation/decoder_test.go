@@ -6,14 +6,16 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"cosmossdk.io/x/nft"
+	"cosmossdk.io/x/nft/keeper"
+	"cosmossdk.io/x/nft/module"
+	"cosmossdk.io/x/nft/simulation"
+
+	codectestutil "github.com/cosmos/cosmos-sdk/codec/testutil"
 	"github.com/cosmos/cosmos-sdk/crypto/keys/ed25519"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/types/kv"
 	moduletestutil "github.com/cosmos/cosmos-sdk/types/module/testutil"
-	"github.com/cosmos/cosmos-sdk/x/nft"
-	"github.com/cosmos/cosmos-sdk/x/nft/keeper"
-	"github.com/cosmos/cosmos-sdk/x/nft/module"
-	"github.com/cosmos/cosmos-sdk/x/nft/simulation"
 )
 
 var (
@@ -22,7 +24,7 @@ var (
 )
 
 func TestDecodeStore(t *testing.T) {
-	encCfg := moduletestutil.MakeTestEncodingConfig(module.AppModuleBasic{})
+	encCfg := moduletestutil.MakeTestEncodingConfig(codectestutil.CodecOptions{}, module.AppModule{})
 	dec := simulation.NewDecodeStore(encCfg.Codec)
 
 	class := nft.Class{
@@ -50,11 +52,11 @@ func TestDecodeStore(t *testing.T) {
 
 	kvPairs := kv.Pairs{
 		Pairs: []kv.Pair{
-			{Key: []byte(keeper.ClassKey), Value: classBz},
-			{Key: []byte(keeper.NFTKey), Value: nftBz},
-			{Key: []byte(keeper.NFTOfClassByOwnerKey), Value: nftOfClassByOwnerValue},
-			{Key: []byte(keeper.OwnerKey), Value: ownerAddr1},
-			{Key: []byte(keeper.ClassTotalSupply), Value: totalSupplyBz},
+			{Key: keeper.ClassKey, Value: classBz},
+			{Key: keeper.NFTKey, Value: nftBz},
+			{Key: keeper.NFTOfClassByOwnerKey, Value: nftOfClassByOwnerValue},
+			{Key: keeper.OwnerKey, Value: ownerAddr1},
+			{Key: keeper.ClassTotalSupply, Value: totalSupplyBz},
 			{Key: []byte{0x99}, Value: []byte{0x99}},
 		},
 	}
@@ -73,7 +75,6 @@ func TestDecodeStore(t *testing.T) {
 	}
 
 	for i, tt := range tests {
-		i, tt := i, tt
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.expectErr {
 				require.Panics(t, func() { dec(kvPairs.Pairs[i], kvPairs.Pairs[i]) }, tt.name)

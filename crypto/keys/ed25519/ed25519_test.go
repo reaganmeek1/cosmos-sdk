@@ -2,13 +2,15 @@ package ed25519_test
 
 import (
 	stded25519 "crypto/ed25519"
+	"crypto/rand"
 	"encoding/base64"
 	"testing"
 
+	"filippo.io/edwards25519"
+	"github.com/cometbft/cometbft/crypto"
+	tmed25519 "github.com/cometbft/cometbft/crypto/ed25519"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"github.com/tendermint/tendermint/crypto"
-	tmed25519 "github.com/tendermint/tendermint/crypto/ed25519"
 
 	"github.com/cosmos/cosmos-sdk/codec"
 	"github.com/cosmos/cosmos-sdk/codec/types"
@@ -31,7 +33,7 @@ func TestSignAndValidateEd25519(t *testing.T) {
 
 	// ----
 	// Test cross packages verification
-	stdPrivKey := stded25519.PrivateKey(privKey.Key)
+	stdPrivKey := privKey.Key
 	stdPubKey := stdPrivKey.Public().(stded25519.PublicKey)
 
 	assert.Equal(t, stdPubKey, pubKey.(*ed25519.PubKey).Key)
@@ -189,7 +191,7 @@ func TestMarshalAmino_BackwardsCompatibility(t *testing.T) {
 	// Create Tendermint keys.
 	tmPrivKey := tmed25519.GenPrivKey()
 	tmPubKey := tmPrivKey.PubKey()
-	// Create our own keys, with the same private key as Tendermint's.
+	// Create our own keys, with the same private key as CometBFT's.
 	privKey := &ed25519.PrivKey{Key: []byte(tmPrivKey)}
 	pubKey := privKey.PubKey().(*ed25519.PubKey)
 
@@ -253,4 +255,41 @@ func TestMarshalJSON(t *testing.T) {
 	err = cdc.UnmarshalInterfaceJSON(bz, &pk2)
 	require.NoError(err)
 	require.True(pk2.Equals(pk))
+}
+
+func TestPubKeyOnCurve(t *testing.T) {
+	t.Parallel()
+
+	t.Run("invalid public key size", func(t *testing.T) {
+		t.Parallel()
+
+		key := &ed25519.PubKey{
+			Key: make(stded25519.PublicKey, ed25519.PubKeySize+1),
+		}
+
+		assert.False(t, key.IsOnCurve())
+	})
+
+	t.Run("identity point", func(t *testing.T) {
+		t.Parallel()
+
+		key := &ed25519.PubKey{
+			Key: stded25519.PublicKey(edwards25519.NewIdentityPoint().Bytes()),
+		}
+
+		assert.False(t, key.IsOnCurve())
+	})
+
+	t.Run("valid public key", func(t *testing.T) {
+		t.Parallel()
+
+		publicKey, _, err := stded25519.GenerateKey(rand.Reader)
+		require.NoError(t, err)
+
+		key := &ed25519.PubKey{
+			Key: publicKey,
+		}
+
+		assert.True(t, key.IsOnCurve())
+	})
 }

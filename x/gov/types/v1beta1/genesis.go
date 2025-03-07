@@ -3,8 +3,9 @@ package v1beta1
 import (
 	"fmt"
 
+	gogoprotoany "github.com/cosmos/gogoproto/types/any"
+
 	"cosmossdk.io/math"
-	"github.com/cosmos/cosmos-sdk/codec/types"
 )
 
 // NewGenesisState creates a new genesis state for the governance module
@@ -27,6 +28,7 @@ func DefaultGenesisState() *GenesisState {
 	)
 }
 
+// Equal returns true if the GenesisStates are equal
 func (data GenesisState) Equal(other GenesisState) bool {
 	return data.StartingProposalId == other.StartingProposalId &&
 		data.Deposits.Equal(other.Deposits) &&
@@ -64,10 +66,10 @@ func ValidateGenesis(data *GenesisState) error {
 	return nil
 }
 
-var _ types.UnpackInterfacesMessage = GenesisState{}
+var _ gogoprotoany.UnpackInterfacesMessage = GenesisState{}
 
 // UnpackInterfaces implements UnpackInterfacesMessage.UnpackInterfaces
-func (data GenesisState) UnpackInterfaces(unpacker types.AnyUnpacker) error {
+func (data GenesisState) UnpackInterfaces(unpacker gogoprotoany.AnyUnpacker) error {
 	for _, p := range data.Proposals {
 		err := p.UnpackInterfaces(unpacker)
 		if err != nil {

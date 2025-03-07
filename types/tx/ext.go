@@ -1,16 +1,18 @@
 package tx
 
 import (
+	gogoprotoany "github.com/cosmos/gogoproto/types/any"
+
 	"github.com/cosmos/cosmos-sdk/codec/types"
 )
 
 // TxExtensionOptionI defines the interface for tx extension options
-type ExtensionOptionI interface{}
+type TxExtensionOptionI interface{}
 
 // unpackTxExtensionOptionsI unpacks Any's to TxExtensionOptionI's.
-func unpackTxExtensionOptionsI(unpacker types.AnyUnpacker, anys []*types.Any) error {
+func unpackTxExtensionOptionsI(unpacker gogoprotoany.AnyUnpacker, anys []*types.Any) error {
 	for _, any := range anys {
-		var opt ExtensionOptionI
+		var opt TxExtensionOptionI
 		err := unpacker.UnpackAny(any, &opt)
 		if err != nil {
 			return err

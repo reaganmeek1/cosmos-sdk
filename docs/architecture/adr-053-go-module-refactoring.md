@@ -52,6 +52,7 @@ as to how to do this, with some developers arguing for larger vs smaller
 module scopes. There are pros and cons to both approaches (which will be
 discussed below in the [Consequences](#consequences) section), but the
 approach being adopted is the following:
+
 * a go module should generally be scoped to a specific coherent set of
 functionality (such as math, errors, store, etc.)
 * when code is removed from the core SDK and moved to a new module path, every 
@@ -69,7 +70,7 @@ clear improvements to be made or to remove legacy dependencies (for instance on
 amino or gogo proto), as long the old package attempts
 to avoid API breakage with aliases and wrappers
 * care should be taken when simply trying to turn an existing package into a
-new go module: https://github.com/golang/go/wiki/Modules#is-it-possible-to-add-a-module-to-a-multi-module-repository.
+new go module: https://go.dev/wiki/Modules#is-it-possible-to-add-a-module-to-a-multi-module-repository.
 In general, it seems safer to just create a new module path (appending v2, v3, etc.
 if necessary), rather than trying to make an old package a new module.
 

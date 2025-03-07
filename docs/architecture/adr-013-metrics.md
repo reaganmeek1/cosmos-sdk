@@ -10,7 +10,7 @@ Proposed
 
 ## Context
 
-Telemetry is paramount into debugging and understanding what the application is doing and how it is
+Telemetry is paramount in debugging and understanding what the application is doing and how it is
 performing. We aim to expose metrics from modules and other core parts of the Cosmos SDK.
 
 In addition, we should aim to support multiple configurable sinks that an operator may choose from.
@@ -21,7 +21,7 @@ and is rich with ecosystem tooling.
 
 We must also aim to integrate metrics into the Cosmos SDK in the most seamless way possible such that
 metrics may be added or removed at will and without much friction. To do this, we will use the
-[go-metrics](https://github.com/armon/go-metrics) library.
+[go-metrics](https://github.com/hashicorp/go-metrics) library.
 
 Finally, operators may enable telemetry along with specific configuration options. If enabled, metrics
 will be exposed via `/metrics?format={text|prometheus}` via the API server.
@@ -148,7 +148,7 @@ func (k BaseKeeper) MintCoins(ctx sdk.Context, moduleName string, amt sdk.Coins)
 
 ### Positive
 
-* Exposure into the performance and behavior of an application
+* Exposure to the performance and behavior of an application
 
 ### Negative
 

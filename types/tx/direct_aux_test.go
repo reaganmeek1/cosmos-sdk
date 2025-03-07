@@ -5,6 +5,8 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	apisigning "cosmossdk.io/api/cosmos/tx/signing/v1beta1"
+
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	cryptotypes "github.com/cosmos/cosmos-sdk/crypto/types"
 	"github.com/cosmos/cosmos-sdk/testutil/testdata"
@@ -14,7 +16,7 @@ import (
 
 func TestSignDocDirectAux(t *testing.T) {
 	bodyBz := []byte{42}
-	_, pk, addr := testdata.KeyTestPubAddr()
+	_, pk, _ := testdata.KeyTestPubAddr()
 	pkAny, err := codectypes.NewAnyWithValue(pk)
 	require.NoError(t, err)
 
@@ -25,17 +27,14 @@ func TestSignDocDirectAux(t *testing.T) {
 	}{
 		{"empty bodyBz", tx.SignDocDirectAux{}, true},
 		{"empty pubkey", tx.SignDocDirectAux{BodyBytes: bodyBz}, true},
-		{"empty tipper", tx.SignDocDirectAux{BodyBytes: bodyBz, PublicKey: pkAny, Tip: &tx.Tip{Amount: testdata.NewTestFeeAmount()}}, true},
 		{"happy case w/o tip", tx.SignDocDirectAux{BodyBytes: bodyBz, PublicKey: pkAny}, false},
 		{"happy case w/ tip", tx.SignDocDirectAux{
 			BodyBytes: bodyBz,
 			PublicKey: pkAny,
-			Tip:       &tx.Tip{Tipper: addr.String(), Amount: testdata.NewTestFeeAmount()},
 		}, false},
 	}
 
 	for _, tc := range testcases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.sd.ValidateBasic()
 
@@ -63,14 +62,13 @@ func TestAuxSignerData(t *testing.T) {
 	}{
 		{"empty address", tx.AuxSignerData{}, true},
 		{"empty sign mode", tx.AuxSignerData{Address: addr.String()}, true},
-		{"SIGN_MODE_DIRECT", tx.AuxSignerData{Address: addr.String(), Mode: signing.SignMode(signing.SignMode_SIGN_MODE_DIRECT)}, true},
-		{"no sig", tx.AuxSignerData{Address: addr.String(), Mode: signing.SignMode(signing.SignMode_SIGN_MODE_DIRECT_AUX)}, true},
+		{"SIGN_MODE_DIRECT", tx.AuxSignerData{Address: addr.String(), Mode: signing.SignMode_SIGN_MODE_DIRECT}, true},
+		{"no sig", tx.AuxSignerData{Address: addr.String(), Mode: signing.SignMode_SIGN_MODE_DIRECT_AUX}, true},
 		{"happy case WITH DIRECT_AUX", tx.AuxSignerData{Address: addr.String(), Mode: signing.SignMode_SIGN_MODE_DIRECT_AUX, SignDoc: sd, Sig: sig}, false},
 		{"happy case WITH DIRECT_AUX", tx.AuxSignerData{Address: addr.String(), Mode: signing.SignMode_SIGN_MODE_LEGACY_AMINO_JSON, SignDoc: sd, Sig: sig}, false},
 	}
 
 	for _, tc := range testcases {
-		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			err := tc.sd.ValidateBasic()
 
@@ -80,7 +78,7 @@ func TestAuxSignerData(t *testing.T) {
 				require.NoError(t, err)
 				sigV2, err := tc.sd.GetSignatureV2()
 				require.NoError(t, err)
-				require.Equal(t, tc.sd.Mode, sigV2.Data.(*signing.SingleSignatureData).SignMode)
+				require.Equal(t, apisigning.SignMode(tc.sd.Mode), sigV2.Data.(*signing.SingleSignatureData).SignMode)
 				require.Equal(t, tc.sd.Sig, sigV2.Data.(*signing.SingleSignatureData).Signature)
 				require.Equal(t, tc.sd.SignDoc.Sequence, sigV2.Sequence)
 				require.True(t, tc.sd.SignDoc.PublicKey.GetCachedValue().(cryptotypes.PubKey).Equals(sigV2.PubKey))

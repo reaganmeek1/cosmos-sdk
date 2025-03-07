@@ -1,35 +1,44 @@
 package feegrant_test
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	ocproto "github.com/tendermint/tendermint/proto/tendermint/types"
 
+	appmodulev2 "cosmossdk.io/core/appmodule/v2"
+	corecontext "cosmossdk.io/core/context"
+	"cosmossdk.io/core/header"
+	storetypes "cosmossdk.io/store/types"
+	banktypes "cosmossdk.io/x/bank/types"
+	"cosmossdk.io/x/feegrant"
+	"cosmossdk.io/x/feegrant/module"
+
+	addresscodec "github.com/cosmos/cosmos-sdk/codec/address"
+	codectestutil "github.com/cosmos/cosmos-sdk/codec/testutil"
 	"github.com/cosmos/cosmos-sdk/testutil"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	moduletestutil "github.com/cosmos/cosmos-sdk/types/module/testutil"
-	banktypes "github.com/cosmos/cosmos-sdk/x/bank/types"
-	"github.com/cosmos/cosmos-sdk/x/feegrant"
-	"github.com/cosmos/cosmos-sdk/x/feegrant/module"
 )
 
 func TestFilteredFeeValidAllow(t *testing.T) {
-	key := sdk.NewKVStoreKey(feegrant.StoreKey)
-	testCtx := testutil.DefaultContextWithDB(t, key, sdk.NewTransientStoreKey("transient_test"))
-	encCfg := moduletestutil.MakeTestEncodingConfig(module.AppModuleBasic{})
+	key := storetypes.NewKVStoreKey(feegrant.StoreKey)
+	testCtx := testutil.DefaultContextWithDB(t, key, storetypes.NewTransientStoreKey("transient_test"))
+	encCfg := moduletestutil.MakeTestEncodingConfig(codectestutil.CodecOptions{}, module.AppModule{})
 
-	ctx := testCtx.Ctx.WithBlockHeader(ocproto.Header{Time: time.Now()})
+	ctx := testCtx.Ctx.WithHeaderInfo(header.Info{Time: time.Now()})
 
 	eth := sdk.NewCoins(sdk.NewInt64Coin("eth", 10))
 	atom := sdk.NewCoins(sdk.NewInt64Coin("atom", 555))
 	smallAtom := sdk.NewCoins(sdk.NewInt64Coin("atom", 43))
 	bigAtom := sdk.NewCoins(sdk.NewInt64Coin("atom", 1000))
 	leftAtom := sdk.NewCoins(sdk.NewInt64Coin("atom", 512))
-	now := ctx.BlockTime()
+	now := ctx.HeaderInfo().Time
 	oneHour := now.Add(1 * time.Hour)
+
+	ac := addresscodec.NewBech32Codec("cosmos")
 
 	// msg we will call in the all cases
 	call := banktypes.MsgSend{}
@@ -132,23 +141,27 @@ func TestFilteredFeeValidAllow(t *testing.T) {
 		},
 	}
 
-	for name, stc := range cases {
-		tc := stc // to make scopelint happy
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			err := tc.allowance.ValidateBasic()
 			require.NoError(t, err)
 
-			ctx := testCtx.Ctx.WithBlockTime(tc.blockTime)
+			ctx := testCtx.Ctx.WithHeaderInfo(header.Info{Time: tc.blockTime})
 
 			// create grant
-			var granter, grantee sdk.AccAddress
+			granter, grantee := sdk.AccAddress("granter"), sdk.AccAddress("grantee")
 			allowance, err := feegrant.NewAllowedMsgAllowance(tc.allowance, tc.msgs)
 			require.NoError(t, err)
-			grant, err := feegrant.NewGrant(granter, grantee, allowance)
+			granterStr, err := ac.BytesToString(granter)
+			require.NoError(t, err)
+			granteeStr, err := ac.BytesToString(grantee)
 			require.NoError(t, err)
 
 			// now try to deduct
-			removed, err := allowance.Accept(ctx, tc.fee, []sdk.Msg{&call})
+			removed, err := allowance.Accept(context.WithValue(ctx, corecontext.EnvironmentContextKey, appmodulev2.Environment{
+				HeaderService: mockHeaderService{},
+				GasService:    mockGasService{},
+			}), tc.fee, []sdk.Msg{&call})
 			if !tc.accept {
 				require.Error(t, err)
 				return
@@ -164,8 +177,8 @@ func TestFilteredFeeValidAllow(t *testing.T) {
 
 				// create a new updated grant
 				newGrant, err := feegrant.NewGrant(
-					sdk.AccAddress(grant.Granter),
-					sdk.AccAddress(grant.Grantee),
+					granterStr,
+					granteeStr,
 					allowance)
 				require.NoError(t, err)
 

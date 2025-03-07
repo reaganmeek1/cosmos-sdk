@@ -1,9 +1,10 @@
 package multisig
 
 import (
-	fmt "fmt"
+	"fmt"
 
-	tmcrypto "github.com/tendermint/tendermint/crypto"
+	cmtcrypto "github.com/cometbft/cometbft/crypto"
+	gogoprotoany "github.com/cosmos/gogoproto/types/any"
 
 	"github.com/cosmos/cosmos-sdk/codec/types"
 	cryptotypes "github.com/cosmos/cosmos-sdk/crypto/types"
@@ -12,8 +13,8 @@ import (
 )
 
 var (
-	_ multisigtypes.PubKey          = &LegacyAminoPubKey{}
-	_ types.UnpackInterfacesMessage = &LegacyAminoPubKey{}
+	_ multisigtypes.PubKey                 = &LegacyAminoPubKey{}
+	_ gogoprotoany.UnpackInterfacesMessage = &LegacyAminoPubKey{}
 )
 
 // NewLegacyAminoPubKey returns a new LegacyAminoPubKey.
@@ -36,7 +37,7 @@ func NewLegacyAminoPubKey(threshold int, pubKeys []cryptotypes.PubKey) *LegacyAm
 
 // Address implements cryptotypes.PubKey Address method
 func (m *LegacyAminoPubKey) Address() cryptotypes.Address {
-	return tmcrypto.AddressHash(m.Bytes())
+	return cmtcrypto.AddressHash(m.Bytes())
 }
 
 // Bytes returns the proto encoded version of the LegacyAminoPubKey
@@ -54,6 +55,11 @@ func (m *LegacyAminoPubKey) VerifyMultisignature(getSignBytes multisigtypes.GetS
 	sigs := sig.Signatures
 	size := bitarray.Count()
 	pubKeys := m.GetPubKeys()
+
+	// N-M rule verification
+	if int(m.Threshold) <= 0 {
+		return fmt.Errorf("invalid threshold: must be > 0, got %d", m.Threshold)
+	}
 	// ensure bit array is the correct size
 	if len(pubKeys) != size {
 		return fmt.Errorf("bit array size is incorrect, expecting: %d", len(pubKeys))
@@ -100,7 +106,7 @@ func (m *LegacyAminoPubKey) VerifyMultisignature(getSignBytes multisigtypes.GetS
 // VerifySignature implements cryptotypes.PubKey VerifySignature method,
 // it panics because it can't handle MultiSignatureData
 // cf. https://github.com/cosmos/cosmos-sdk/issues/7109#issuecomment-686329936
-func (m *LegacyAminoPubKey) VerifySignature(msg []byte, sig []byte) bool {
+func (m *LegacyAminoPubKey) VerifySignature(msg, sig []byte) bool {
 	panic("not implemented")
 }
 
@@ -149,7 +155,7 @@ func (m *LegacyAminoPubKey) Type() string {
 }
 
 // UnpackInterfaces implements UnpackInterfacesMessage.UnpackInterfaces
-func (m *LegacyAminoPubKey) UnpackInterfaces(unpacker types.AnyUnpacker) error {
+func (m *LegacyAminoPubKey) UnpackInterfaces(unpacker gogoprotoany.AnyUnpacker) error {
 	for _, any := range m.PubKeys {
 		var pk cryptotypes.PubKey
 		err := unpacker.UnpackAny(any, &pk)

@@ -4,13 +4,16 @@ import (
 	"testing"
 	"time"
 
-	"cosmossdk.io/math"
-	sdk "github.com/cosmos/cosmos-sdk/types"
-	"github.com/cosmos/cosmos-sdk/types/tx"
-	v3 "github.com/cosmos/cosmos-sdk/x/gov/migrations/v3"
-	v1 "github.com/cosmos/cosmos-sdk/x/gov/types/v1"
-	"github.com/cosmos/cosmos-sdk/x/gov/types/v1beta1"
 	"github.com/stretchr/testify/require"
+
+	"cosmossdk.io/math"
+	v3 "cosmossdk.io/x/gov/migrations/v3"
+	v1 "cosmossdk.io/x/gov/types/v1"
+	"cosmossdk.io/x/gov/types/v1beta1"
+
+	sdk "github.com/cosmos/cosmos-sdk/types"
+	sdkerrors "github.com/cosmos/cosmos-sdk/types/errors"
+	"github.com/cosmos/cosmos-sdk/types/tx"
 )
 
 func TestConvertToLegacyProposal(t *testing.T) {
@@ -57,13 +60,48 @@ func TestConvertToLegacyProposal(t *testing.T) {
 				require.Equal(t, v1beta1Proposal.VotingEndTime, *proposal.VotingEndTime)
 				require.Equal(t, v1beta1Proposal.SubmitTime, *proposal.SubmitTime)
 				require.Equal(t, v1beta1Proposal.DepositEndTime, *proposal.DepositEndTime)
-				require.Equal(t, v1beta1Proposal.FinalTallyResult.Yes, sdk.NewInt(0))
-				require.Equal(t, v1beta1Proposal.FinalTallyResult.No, sdk.NewInt(0))
-				require.Equal(t, v1beta1Proposal.FinalTallyResult.NoWithVeto, sdk.NewInt(0))
-				require.Equal(t, v1beta1Proposal.FinalTallyResult.Abstain, sdk.NewInt(0))
+				require.Equal(t, v1beta1Proposal.FinalTallyResult.Yes, math.NewInt(0))
+				require.Equal(t, v1beta1Proposal.FinalTallyResult.No, math.NewInt(0))
+				require.Equal(t, v1beta1Proposal.FinalTallyResult.NoWithVeto, math.NewInt(0))
+				require.Equal(t, v1beta1Proposal.FinalTallyResult.Abstain, math.NewInt(0))
+				tp, ok := v1beta1Proposal.Content.GetCachedValue().(*v1beta1.TextProposal)
+				require.Truef(t, ok, "expected *TextProposal, got %T", v1beta1Proposal.Content.GetCachedValue())
+				require.Equal(t, tp.Title, "title")
+				require.Equal(t, tp.Description, "description")
 			}
 		})
 	}
+}
+
+func TestConvertToLegacyProposalContent(t *testing.T) {
+	msg := v1.MsgCancelProposal{ProposalId: 1, Proposer: "cosmos1fl48vsnmsdzcv85q5d2q4z5ajdha8yu34mf0eh"}
+	msgsAny, err := tx.SetMsgs([]sdk.Msg{&msg})
+	require.NoError(t, err)
+	tallyResult := v1.EmptyTallyResult()
+	proposal := v1.Proposal{
+		Id:               1,
+		Status:           v1.StatusDepositPeriod,
+		Messages:         msgsAny,
+		Metadata:         "proposal metadata",
+		FinalTallyResult: &tallyResult,
+	}
+
+	legacyP, err := v3.ConvertToLegacyProposal(proposal)
+	require.NoError(t, err)
+	tp, ok := legacyP.Content.GetCachedValue().(*v1.MsgCancelProposal)
+	require.Truef(t, ok, "expected *MsgCancelProposal, got %T", legacyP.Content.GetCachedValue())
+	require.Equal(t, &msg, tp)
+
+	// more than one message is not supported
+	proposal.Messages, err = tx.SetMsgs([]sdk.Msg{&msg, &msg})
+	require.NoError(t, err)
+	_, err = v3.ConvertToLegacyProposal(proposal)
+	require.ErrorIs(t, sdkerrors.ErrInvalidType, err)
+
+	// zero messages is not supported
+	proposal.Messages = nil
+	_, err = v3.ConvertToLegacyProposal(proposal)
+	require.ErrorIs(t, sdkerrors.ErrInvalidType, err)
 }
 
 func TestConvertToLegacyTallyResult(t *testing.T) {
@@ -81,6 +119,7 @@ func TestConvertToLegacyTallyResult(t *testing.T) {
 				NoCount:         tallyResult.NoCount,
 				AbstainCount:    tallyResult.AbstainCount,
 				NoWithVetoCount: tallyResult.NoWithVetoCount,
+				SpamCount:       tallyResult.SpamCount,
 			},
 			expErr: true,
 		},
@@ -90,6 +129,7 @@ func TestConvertToLegacyTallyResult(t *testing.T) {
 				NoCount:         "invalid",
 				AbstainCount:    tallyResult.AbstainCount,
 				NoWithVetoCount: tallyResult.NoWithVetoCount,
+				SpamCount:       tallyResult.SpamCount,
 			},
 			expErr: true,
 		},
@@ -99,6 +139,7 @@ func TestConvertToLegacyTallyResult(t *testing.T) {
 				NoCount:         tallyResult.NoCount,
 				AbstainCount:    "invalid",
 				NoWithVetoCount: tallyResult.NoWithVetoCount,
+				SpamCount:       tallyResult.SpamCount,
 			},
 			expErr: true,
 		},
@@ -108,6 +149,7 @@ func TestConvertToLegacyTallyResult(t *testing.T) {
 				NoCount:         tallyResult.NoCount,
 				AbstainCount:    tallyResult.AbstainCount,
 				NoWithVetoCount: "invalid",
+				SpamCount:       tallyResult.SpamCount,
 			},
 			expErr: true,
 		},
@@ -165,7 +207,7 @@ func TestConvertToLegacyDeposit(t *testing.T) {
 	deposit := v1.Deposit{
 		ProposalId: 1,
 		Depositor:  "cosmos1fl48vsnmsdzcv85q5d2q4z5ajdha8yu34mf0eh",
-		Amount:     sdk.NewCoins(sdk.NewCoin(sdk.DefaultBondDenom, sdk.NewInt(1))),
+		Amount:     sdk.NewCoins(sdk.NewCoin(sdk.DefaultBondDenom, math.NewInt(1))),
 	}
 
 	v1beta1Deposit := v3.ConvertToLegacyDeposit(&deposit)

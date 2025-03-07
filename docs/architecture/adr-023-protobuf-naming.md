@@ -11,7 +11,7 @@ Accepted
 
 ## Context
 
-Protocol Buffers provide a basic [style guide](https://developers.google.com/protocol-buffers/docs/style)
+Protocol Buffers provide a basic [style guide](https://protobuf.dev/programming-guides/style/)
 and [Buf](https://buf.build/docs/style-guide) builds upon that. To the
 extent possible, we want to follow industry accepted guidelines and wisdom for
 the effective usage of protobuf, deviating from those only when there is clear
@@ -70,7 +70,7 @@ Further guidelines to be described below.
 Names should be descriptive enough to convey their meaning and distinguish
 them from other names.
 
-Given that we are using fully-qualifed names within
+Given that we are using fully-qualified names within
 `google.protobuf.Any` as well as within gRPC query routes, we should aim to
 keep names concise, without going overboard. The general rule of thumb should
 be if a shorter name would convey more or else the same thing, pick the shorter
@@ -191,7 +191,7 @@ is used in source code to denote modules, this is often unnecessary for .proto
 files as modules are the primary thing sub-packages are used for. Only items which
 are known to be used infrequently should have deep sub-package depths.
 
-For the Cosmos SDK, it is recommended that that we simply write `cosmos.bank`,
+For the Cosmos SDK, it is recommended that we simply write `cosmos.bank`,
 `cosmos.gov`, etc. rather than `cosmos.x.bank`. In practice, most non-module
 types can go straight in the `cosmos` package or we can introduce a
 `cosmos.base` package if needed. Note that this naming _will not_ change

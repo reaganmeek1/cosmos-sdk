@@ -3,70 +3,102 @@ package keeper_test
 import (
 	"testing"
 
-	"cosmossdk.io/math"
 	"github.com/stretchr/testify/require"
-	tmproto "github.com/tendermint/tendermint/proto/tendermint/types"
+	"go.uber.org/mock/gomock"
 
-	simtestutil "github.com/cosmos/cosmos-sdk/testutil/sims"
+	"cosmossdk.io/collections"
+	"cosmossdk.io/core/header"
+	coretesting "cosmossdk.io/core/testing"
+	"cosmossdk.io/math"
+	storetypes "cosmossdk.io/store/types"
+	"cosmossdk.io/x/distribution"
+	"cosmossdk.io/x/distribution/keeper"
+	distrtestutil "cosmossdk.io/x/distribution/testutil"
+	disttypes "cosmossdk.io/x/distribution/types"
+	stakingtypes "cosmossdk.io/x/staking/types"
+
+	"github.com/cosmos/cosmos-sdk/codec/address"
+	codectestutil "github.com/cosmos/cosmos-sdk/codec/testutil"
+	"github.com/cosmos/cosmos-sdk/runtime"
+	"github.com/cosmos/cosmos-sdk/testutil"
 	sdk "github.com/cosmos/cosmos-sdk/types"
-	authkeeper "github.com/cosmos/cosmos-sdk/x/auth/keeper"
-	bankkeeper "github.com/cosmos/cosmos-sdk/x/bank/keeper"
-	banktestutil "github.com/cosmos/cosmos-sdk/x/bank/testutil"
-	"github.com/cosmos/cosmos-sdk/x/distribution/keeper"
-	"github.com/cosmos/cosmos-sdk/x/distribution/testutil"
-	"github.com/cosmos/cosmos-sdk/x/staking"
-	stakingkeeper "github.com/cosmos/cosmos-sdk/x/staking/keeper"
-	"github.com/cosmos/cosmos-sdk/x/staking/teststaking"
-	stakingtypes "github.com/cosmos/cosmos-sdk/x/staking/types"
+	moduletestutil "github.com/cosmos/cosmos-sdk/types/module/testutil"
+	authtypes "github.com/cosmos/cosmos-sdk/x/auth/types"
 )
 
 func TestCalculateRewardsBasic(t *testing.T) {
-	var (
-		bankKeeper    bankkeeper.Keeper
-		distrKeeper   keeper.Keeper
-		stakingKeeper *stakingkeeper.Keeper
-	)
+	ctrl := gomock.NewController(t)
+	key := storetypes.NewKVStoreKey(disttypes.StoreKey)
+	testCtx := testutil.DefaultContextWithDB(t, key, storetypes.NewTransientStoreKey("transient_test"))
+	encCfg := moduletestutil.MakeTestEncodingConfig(codectestutil.CodecOptions{}, distribution.AppModule{})
+	ctx := testCtx.Ctx.WithHeaderInfo(header.Info{Height: 1})
+	addrCdc := address.NewBech32Codec(sdk.Bech32MainPrefix)
 
-	app, err := simtestutil.Setup(testutil.AppConfig,
-		&bankKeeper,
-		&distrKeeper,
-		&stakingKeeper,
-	)
+	bankKeeper := distrtestutil.NewMockBankKeeper(ctrl)
+	stakingKeeper := distrtestutil.NewMockStakingKeeper(ctrl)
+	accountKeeper := distrtestutil.NewMockAccountKeeper(ctrl)
+
+	accountKeeper.EXPECT().GetModuleAddress("distribution").Return(distrAcc.GetAddress())
+	stakingKeeper.EXPECT().ValidatorAddressCodec().Return(address.NewBech32Codec(sdk.Bech32PrefixValAddr)).AnyTimes()
+	accountKeeper.EXPECT().AddressCodec().Return(addrCdc)
+
+	env := runtime.NewEnvironment(runtime.NewKVStoreService(key), coretesting.NewNopLogger())
+
+	authorityAddr, err := addrCdc.BytesToString(authtypes.NewModuleAddress("gov"))
 	require.NoError(t, err)
 
-	ctx := app.BaseApp.NewContext(false, tmproto.Header{})
+	distrKeeper := keeper.NewKeeper(
+		encCfg.Codec,
+		env,
+		accountKeeper,
+		bankKeeper,
+		stakingKeeper,
+		testCometService,
+		"fee_collector",
+		authorityAddr,
+	)
 
-	distrKeeper.DeleteAllValidatorHistoricalRewards(ctx)
-
-	tstaking := teststaking.NewHelper(t, ctx, stakingKeeper)
-
-	addr := simtestutil.AddTestAddrs(bankKeeper, stakingKeeper, ctx, 2, sdk.NewInt(1000))
-	valAddrs := simtestutil.ConvertAddrsToValAddrs(addr)
+	// reset fee pool
+	require.NoError(t, distrKeeper.FeePool.Set(ctx, disttypes.InitialFeePool()))
+	require.NoError(t, distrKeeper.Params.Set(ctx, disttypes.DefaultParams()))
 
 	// create validator with 50% commission
-	tstaking.Commission = stakingtypes.NewCommissionRates(sdk.NewDecWithPrec(5, 1), sdk.NewDecWithPrec(5, 1), math.LegacyNewDec(0))
-	tstaking.CreateValidator(valAddrs[0], valConsPk1, sdk.NewInt(100), true)
+	valAddr := sdk.ValAddress(valConsAddr0)
+	addr := sdk.AccAddress(valAddr)
+	operatorAddr, err := stakingKeeper.ValidatorAddressCodec().BytesToString(valConsPk0.Address())
+	require.NoError(t, err)
+	val, err := distrtestutil.CreateValidator(valConsPk0, operatorAddr, math.NewInt(1000))
+	require.NoError(t, err)
+	val.Commission = stakingtypes.NewCommission(math.LegacyNewDecWithPrec(5, 1), math.LegacyNewDecWithPrec(5, 1), math.LegacyNewDec(0))
 
-	// end block to bond validator and start new block
-	staking.EndBlocker(ctx, stakingKeeper)
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 1)
-	tstaking.Ctx = ctx
+	addrStr, err := addrCdc.BytesToString(addr)
+	require.NoError(t, err)
+	valAddrStr, err := stakingKeeper.ValidatorAddressCodec().BytesToString(valAddr)
+	require.NoError(t, err)
 
-	// fetch validator and delegation
-	val := stakingKeeper.Validator(ctx, valAddrs[0])
-	del := stakingKeeper.Delegation(ctx, sdk.AccAddress(valAddrs[0]), valAddrs[0])
+	// delegation mock
+	del := stakingtypes.NewDelegation(addrStr, valAddrStr, val.DelegatorShares)
+	stakingKeeper.EXPECT().Validator(gomock.Any(), valAddr).Return(val, nil).Times(3)
+	stakingKeeper.EXPECT().Delegation(gomock.Any(), addr, valAddr).Return(del, nil)
+
+	// run the necessary hooks manually (given that we are not running an actual staking module)
+	err = distrtestutil.CallCreateValidatorHooks(ctx, distrKeeper, addr, valAddr)
+	require.NoError(t, err)
+
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 1})
 
 	// historical count should be 2 (once for validator init, once for delegation init)
-	require.Equal(t, uint64(2), distrKeeper.GetValidatorHistoricalReferenceCount(ctx))
+	require.Equal(t, 2, getValHistoricalReferenceCount(distrKeeper, ctx))
 
 	// end period
-	endingPeriod := distrKeeper.IncrementValidatorPeriod(ctx, val)
+	endingPeriod, _ := distrKeeper.IncrementValidatorPeriod(ctx, val)
 
 	// historical count should be 2 still
-	require.Equal(t, uint64(2), distrKeeper.GetValidatorHistoricalReferenceCount(ctx))
+	require.Equal(t, 2, getValHistoricalReferenceCount(distrKeeper, ctx))
 
 	// calculate delegation rewards
-	rewards := distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+	rewards, err := distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+	require.NoError(t, err)
 
 	// rewards should be zero
 	require.True(t, rewards.IsZero())
@@ -74,749 +106,1083 @@ func TestCalculateRewardsBasic(t *testing.T) {
 	// allocate some rewards
 	initial := int64(10)
 	tokens := sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDec(initial)}}
-	distrKeeper.AllocateTokensToValidator(ctx, val, tokens)
+	require.NoError(t, distrKeeper.AllocateTokensToValidator(ctx, val, tokens))
 
 	// end period
-	endingPeriod = distrKeeper.IncrementValidatorPeriod(ctx, val)
+	endingPeriod, _ = distrKeeper.IncrementValidatorPeriod(ctx, val)
 
 	// calculate delegation rewards
-	rewards = distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+	rewards, err = distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+	require.NoError(t, err)
 
 	// rewards should be half the tokens
 	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDec(initial / 2)}}, rewards)
 
 	// commission should be the other half
-	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDec(initial / 2)}}, distrKeeper.GetValidatorAccumulatedCommission(ctx, valAddrs[0]).Commission)
+	valCommission, err := distrKeeper.ValidatorsAccumulatedCommission.Get(ctx, valAddr)
+	require.NoError(t, err)
+	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDec(initial / 2)}}, valCommission.Commission)
+}
+
+func getValHistoricalReferenceCount(k keeper.Keeper, ctx sdk.Context) int {
+	count := 0
+	err := k.ValidatorHistoricalRewards.Walk(
+		ctx, nil, func(key collections.Pair[sdk.ValAddress, uint64], rewards disttypes.ValidatorHistoricalRewards) (stop bool, err error) {
+			count += int(rewards.ReferenceCount)
+			return false, nil
+		},
+	)
+	if err != nil {
+		panic(err)
+	}
+
+	return count
 }
 
 func TestCalculateRewardsAfterSlash(t *testing.T) {
-	var (
-		bankKeeper    bankkeeper.Keeper
-		distrKeeper   keeper.Keeper
-		stakingKeeper *stakingkeeper.Keeper
-	)
+	ctrl := gomock.NewController(t)
+	key := storetypes.NewKVStoreKey(disttypes.StoreKey)
+	testCtx := testutil.DefaultContextWithDB(t, key, storetypes.NewTransientStoreKey("transient_test"))
+	encCfg := moduletestutil.MakeTestEncodingConfig(codectestutil.CodecOptions{}, distribution.AppModule{})
+	ctx := testCtx.Ctx.WithHeaderInfo(header.Info{Height: 1})
+	addrCdc := address.NewBech32Codec(sdk.Bech32MainPrefix)
 
-	app, err := simtestutil.Setup(testutil.AppConfig,
-		&bankKeeper,
-		&distrKeeper,
-		&stakingKeeper,
-	)
+	bankKeeper := distrtestutil.NewMockBankKeeper(ctrl)
+	stakingKeeper := distrtestutil.NewMockStakingKeeper(ctrl)
+	accountKeeper := distrtestutil.NewMockAccountKeeper(ctrl)
+
+	accountKeeper.EXPECT().GetModuleAddress("distribution").Return(distrAcc.GetAddress())
+	accountKeeper.EXPECT().AddressCodec().Return(addrCdc)
+	stakingKeeper.EXPECT().ValidatorAddressCodec().Return(address.NewBech32Codec(sdk.Bech32PrefixValAddr)).AnyTimes()
+	env := runtime.NewEnvironment(runtime.NewKVStoreService(key), coretesting.NewNopLogger())
+
+	authorityAddr, err := addrCdc.BytesToString(authtypes.NewModuleAddress("gov"))
 	require.NoError(t, err)
 
-	ctx := app.BaseApp.NewContext(false, tmproto.Header{})
+	distrKeeper := keeper.NewKeeper(
+		encCfg.Codec,
+		env,
+		accountKeeper,
+		bankKeeper,
+		stakingKeeper,
+		testCometService,
+		"fee_collector",
+		authorityAddr,
+	)
 
-	addr := simtestutil.AddTestAddrs(bankKeeper, stakingKeeper, ctx, 2, sdk.NewInt(100000000))
-	valAddrs := simtestutil.ConvertAddrsToValAddrs(addr)
-	tstaking := teststaking.NewHelper(t, ctx, stakingKeeper)
+	// reset fee pool
+	require.NoError(t, distrKeeper.FeePool.Set(ctx, disttypes.InitialFeePool()))
+	require.NoError(t, distrKeeper.Params.Set(ctx, disttypes.DefaultParams()))
 
 	// create validator with 50% commission
-	tstaking.Commission = stakingtypes.NewCommissionRates(sdk.NewDecWithPrec(5, 1), sdk.NewDecWithPrec(5, 1), math.LegacyNewDec(0))
+	valAddr := sdk.ValAddress(valConsAddr0)
+	addr := sdk.AccAddress(valAddr)
 	valPower := int64(100)
-	tstaking.CreateValidatorWithValPower(valAddrs[0], valConsPk1, valPower, true)
+	stake := sdk.TokensFromConsensusPower(100, sdk.DefaultPowerReduction)
+	operatorAddr, err := stakingKeeper.ValidatorAddressCodec().BytesToString(valConsPk0.Address())
+	require.NoError(t, err)
+	val, err := distrtestutil.CreateValidator(valConsPk0, operatorAddr, stake)
+	require.NoError(t, err)
+	val.Commission = stakingtypes.NewCommission(math.LegacyNewDecWithPrec(5, 1), math.LegacyNewDecWithPrec(5, 1), math.LegacyNewDec(0))
 
-	// end block to bond validator
-	staking.EndBlocker(ctx, stakingKeeper)
+	addrStr, err := addrCdc.BytesToString(addr)
+	require.NoError(t, err)
+	valAddrStr, err := stakingKeeper.ValidatorAddressCodec().BytesToString(valAddr)
+	require.NoError(t, err)
+
+	del := stakingtypes.NewDelegation(addrStr, valAddrStr, val.DelegatorShares)
+
+	// set mock calls
+	stakingKeeper.EXPECT().Validator(gomock.Any(), valAddr).Return(val, nil).Times(4)
+	stakingKeeper.EXPECT().Delegation(gomock.Any(), addr, valAddr).Return(del, nil)
+
+	// run the necessary hooks manually (given that we are not running an actual staking module)
+	err = distrtestutil.CallCreateValidatorHooks(ctx, distrKeeper, addr, valAddr)
+	require.NoError(t, err)
 
 	// next block
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 1)
-
-	// fetch validator and delegation
-	val := stakingKeeper.Validator(ctx, valAddrs[0])
-	del := stakingKeeper.Delegation(ctx, sdk.AccAddress(valAddrs[0]), valAddrs[0])
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 1})
 
 	// end period
-	endingPeriod := distrKeeper.IncrementValidatorPeriod(ctx, val)
+	endingPeriod, _ := distrKeeper.IncrementValidatorPeriod(ctx, val)
 
 	// calculate delegation rewards
-	rewards := distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+	rewards, err := distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+	require.NoError(t, err)
 
 	// rewards should be zero
 	require.True(t, rewards.IsZero())
 
 	// start out block height
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 3)
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 3})
 
-	// slash the validator by 50%
-	stakingKeeper.Slash(ctx, valConsAddr1, ctx.BlockHeight(), valPower, sdk.NewDecWithPrec(5, 1))
-
-	// retrieve validator
-	val = stakingKeeper.Validator(ctx, valAddrs[0])
+	// slash the validator by 50% (simulated with manual calls; we assume the validator is bonded)
+	slashedTokens := distrtestutil.SlashValidator(
+		ctx,
+		valConsAddr0,
+		ctx.BlockHeight(),
+		valPower,
+		math.LegacyNewDecWithPrec(5, 1),
+		&val,
+		&distrKeeper,
+		stakingKeeper,
+	)
+	require.True(t, slashedTokens.IsPositive(), "expected positive slashed tokens, got: %s", slashedTokens)
 
 	// increase block height
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 3)
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 3})
 
 	// allocate some rewards
-	initial := stakingKeeper.TokensFromConsensusPower(ctx, 10)
-	tokens := sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: sdk.NewDecFromInt(initial)}}
-	distrKeeper.AllocateTokensToValidator(ctx, val, tokens)
+	initial := sdk.TokensFromConsensusPower(10, sdk.DefaultPowerReduction)
+	tokens := sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDecFromInt(initial)}}
+	require.NoError(t, distrKeeper.AllocateTokensToValidator(ctx, val, tokens))
 
 	// end period
-	endingPeriod = distrKeeper.IncrementValidatorPeriod(ctx, val)
+	endingPeriod, _ = distrKeeper.IncrementValidatorPeriod(ctx, val)
 
 	// calculate delegation rewards
-	rewards = distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+	rewards, err = distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+	require.NoError(t, err)
 
 	// rewards should be half the tokens
-	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: sdk.NewDecFromInt(initial.QuoRaw(2))}}, rewards)
+	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDecFromInt(initial.QuoRaw(2))}}, rewards)
 
 	// commission should be the other half
-	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: sdk.NewDecFromInt(initial.QuoRaw(2))}},
-		distrKeeper.GetValidatorAccumulatedCommission(ctx, valAddrs[0]).Commission)
+	valCommission, err := distrKeeper.ValidatorsAccumulatedCommission.Get(ctx, valAddr)
+	require.NoError(t, err)
+	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDecFromInt(initial.QuoRaw(2))}},
+		valCommission.Commission)
 }
 
 func TestCalculateRewardsAfterManySlashes(t *testing.T) {
-	var (
-		bankKeeper    bankkeeper.Keeper
-		distrKeeper   keeper.Keeper
-		stakingKeeper *stakingkeeper.Keeper
-	)
+	ctrl := gomock.NewController(t)
+	key := storetypes.NewKVStoreKey(disttypes.StoreKey)
+	testCtx := testutil.DefaultContextWithDB(t, key, storetypes.NewTransientStoreKey("transient_test"))
+	encCfg := moduletestutil.MakeTestEncodingConfig(codectestutil.CodecOptions{}, distribution.AppModule{})
+	ctx := testCtx.Ctx.WithHeaderInfo(header.Info{Height: 1})
+	addrCdc := address.NewBech32Codec(sdk.Bech32MainPrefix)
 
-	app, err := simtestutil.Setup(testutil.AppConfig,
-		&bankKeeper,
-		&distrKeeper,
-		&stakingKeeper,
-	)
+	bankKeeper := distrtestutil.NewMockBankKeeper(ctrl)
+	stakingKeeper := distrtestutil.NewMockStakingKeeper(ctrl)
+	accountKeeper := distrtestutil.NewMockAccountKeeper(ctrl)
+
+	accountKeeper.EXPECT().GetModuleAddress("distribution").Return(distrAcc.GetAddress())
+	accountKeeper.EXPECT().AddressCodec().Return(addrCdc)
+	stakingKeeper.EXPECT().ValidatorAddressCodec().Return(address.NewBech32Codec(sdk.Bech32PrefixValAddr)).AnyTimes()
+
+	env := runtime.NewEnvironment(runtime.NewKVStoreService(key), coretesting.NewNopLogger())
+
+	authorityAddr, err := addrCdc.BytesToString(authtypes.NewModuleAddress("gov"))
 	require.NoError(t, err)
 
-	ctx := app.BaseApp.NewContext(false, tmproto.Header{})
+	distrKeeper := keeper.NewKeeper(
+		encCfg.Codec,
+		env,
+		accountKeeper,
+		bankKeeper,
+		stakingKeeper,
+		testCometService,
+		"fee_collector",
+		authorityAddr,
+	)
 
-	tstaking := teststaking.NewHelper(t, ctx, stakingKeeper)
-	addr := simtestutil.AddTestAddrs(bankKeeper, stakingKeeper, ctx, 2, sdk.NewInt(100000000))
-	valAddrs := simtestutil.ConvertAddrsToValAddrs(addr)
+	// reset fee pool
+	require.NoError(t, distrKeeper.FeePool.Set(ctx, disttypes.InitialFeePool()))
+	require.NoError(t, distrKeeper.Params.Set(ctx, disttypes.DefaultParams()))
 
 	// create validator with 50% commission
+	valAddr := sdk.ValAddress(valConsAddr0)
+	addr := sdk.AccAddress(valAddr)
 	valPower := int64(100)
-	tstaking.Commission = stakingtypes.NewCommissionRates(sdk.NewDecWithPrec(5, 1), sdk.NewDecWithPrec(5, 1), math.LegacyNewDec(0))
-	tstaking.CreateValidatorWithValPower(valAddrs[0], valConsPk1, valPower, true)
+	stake := sdk.TokensFromConsensusPower(valPower, sdk.DefaultPowerReduction)
+	operatorAddr, err := stakingKeeper.ValidatorAddressCodec().BytesToString(valConsPk0.Address())
+	require.NoError(t, err)
+	val, err := distrtestutil.CreateValidator(valConsPk0, operatorAddr, stake)
+	require.NoError(t, err)
+	val.Commission = stakingtypes.NewCommission(math.LegacyNewDecWithPrec(5, 1), math.LegacyNewDecWithPrec(5, 1), math.LegacyNewDec(0))
 
-	// end block to bond validator
-	staking.EndBlocker(ctx, stakingKeeper)
+	addrStr, err := addrCdc.BytesToString(addr)
+	require.NoError(t, err)
+	valAddrStr, err := stakingKeeper.ValidatorAddressCodec().BytesToString(valAddr)
+	require.NoError(t, err)
+
+	// delegation mocks
+	del := stakingtypes.NewDelegation(addrStr, valAddrStr, val.DelegatorShares)
+	stakingKeeper.EXPECT().Validator(gomock.Any(), valAddr).Return(val, nil).Times(4)
+	stakingKeeper.EXPECT().Delegation(gomock.Any(), addr, valAddr).Return(del, nil)
+
+	// run the necessary hooks manually (given that we are not running an actual staking module)
+	err = distrtestutil.CallCreateValidatorHooks(ctx, distrKeeper, addr, valAddr)
+	require.NoError(t, err)
 
 	// next block
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 1)
-
-	// fetch validator and delegation
-	val := stakingKeeper.Validator(ctx, valAddrs[0])
-	del := stakingKeeper.Delegation(ctx, sdk.AccAddress(valAddrs[0]), valAddrs[0])
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 1})
 
 	// end period
-	endingPeriod := distrKeeper.IncrementValidatorPeriod(ctx, val)
+	endingPeriod, _ := distrKeeper.IncrementValidatorPeriod(ctx, val)
 
 	// calculate delegation rewards
-	rewards := distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+	rewards, err := distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+	require.NoError(t, err)
 
 	// rewards should be zero
 	require.True(t, rewards.IsZero())
 
 	// start out block height
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 3)
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 3})
 
-	// slash the validator by 50%
-	stakingKeeper.Slash(ctx, valConsAddr1, ctx.BlockHeight(), valPower, sdk.NewDecWithPrec(5, 1))
+	// slash the validator by 50% (simulated with manual calls; we assume the validator is bonded)
+	slashedTokens := distrtestutil.SlashValidator(
+		ctx,
+		valConsAddr0,
+		ctx.BlockHeight(),
+		valPower,
+		math.LegacyNewDecWithPrec(5, 1),
+		&val,
+		&distrKeeper,
+		stakingKeeper,
+	)
+	require.True(t, slashedTokens.IsPositive(), "expected positive slashed tokens, got: %s", slashedTokens)
 
-	// fetch the validator again
-	val = stakingKeeper.Validator(ctx, valAddrs[0])
+	// expect a call for the next slash with the updated validator
+	stakingKeeper.EXPECT().Validator(gomock.Any(), valAddr).Return(val, nil).Times(1)
 
 	// increase block height
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 3)
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 3})
 
 	// allocate some rewards
-	initial := stakingKeeper.TokensFromConsensusPower(ctx, 10)
-	tokens := sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: sdk.NewDecFromInt(initial)}}
-	distrKeeper.AllocateTokensToValidator(ctx, val, tokens)
+	initial := sdk.TokensFromConsensusPower(10, sdk.DefaultPowerReduction)
+	tokens := sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDecFromInt(initial)}}
+	require.NoError(t, distrKeeper.AllocateTokensToValidator(ctx, val, tokens))
 
 	// slash the validator by 50% again
-	stakingKeeper.Slash(ctx, valConsAddr1, ctx.BlockHeight(), valPower/2, sdk.NewDecWithPrec(5, 1))
-
-	// fetch the validator again
-	val = stakingKeeper.Validator(ctx, valAddrs[0])
+	slashedTokens = distrtestutil.SlashValidator(
+		ctx,
+		valConsAddr0,
+		ctx.BlockHeight(),
+		valPower/2,
+		math.LegacyNewDecWithPrec(2, 1),
+		&val,
+		&distrKeeper,
+		stakingKeeper,
+	)
+	require.True(t, slashedTokens.IsPositive(), "expected positive slashed tokens, got: %s", slashedTokens)
 
 	// increase block height
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 3)
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 3})
 
 	// allocate some more rewards
-	distrKeeper.AllocateTokensToValidator(ctx, val, tokens)
+	require.NoError(t, distrKeeper.AllocateTokensToValidator(ctx, val, tokens))
 
 	// end period
-	endingPeriod = distrKeeper.IncrementValidatorPeriod(ctx, val)
+	endingPeriod, _ = distrKeeper.IncrementValidatorPeriod(ctx, val)
 
 	// calculate delegation rewards
-	rewards = distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+	rewards, err = distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+	require.NoError(t, err)
 
 	// rewards should be half the tokens
-	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: sdk.NewDecFromInt(initial)}}, rewards)
+	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDecFromInt(initial)}}, rewards)
 
 	// commission should be the other half
-	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: sdk.NewDecFromInt(initial)}},
-		distrKeeper.GetValidatorAccumulatedCommission(ctx, valAddrs[0]).Commission)
+	valCommission, err := distrKeeper.ValidatorsAccumulatedCommission.Get(ctx, valAddr)
+	require.NoError(t, err)
+	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDecFromInt(initial)}},
+		valCommission.Commission)
 }
 
 func TestCalculateRewardsMultiDelegator(t *testing.T) {
-	var (
-		bankKeeper    bankkeeper.Keeper
-		distrKeeper   keeper.Keeper
-		stakingKeeper *stakingkeeper.Keeper
-	)
+	ctrl := gomock.NewController(t)
+	key := storetypes.NewKVStoreKey(disttypes.StoreKey)
+	testCtx := testutil.DefaultContextWithDB(t, key, storetypes.NewTransientStoreKey("transient_test"))
+	encCfg := moduletestutil.MakeTestEncodingConfig(codectestutil.CodecOptions{}, distribution.AppModule{})
+	ctx := testCtx.Ctx.WithHeaderInfo(header.Info{Height: 1})
+	addrCdc := address.NewBech32Codec(sdk.Bech32MainPrefix)
 
-	app, err := simtestutil.Setup(testutil.AppConfig,
-		&bankKeeper,
-		&distrKeeper,
-		&stakingKeeper,
-	)
+	bankKeeper := distrtestutil.NewMockBankKeeper(ctrl)
+	stakingKeeper := distrtestutil.NewMockStakingKeeper(ctrl)
+	accountKeeper := distrtestutil.NewMockAccountKeeper(ctrl)
+
+	accountKeeper.EXPECT().GetModuleAddress("distribution").Return(distrAcc.GetAddress())
+	stakingKeeper.EXPECT().ValidatorAddressCodec().Return(address.NewBech32Codec(sdk.Bech32PrefixValAddr)).AnyTimes()
+	accountKeeper.EXPECT().AddressCodec().Return(addrCdc)
+
+	env := runtime.NewEnvironment(runtime.NewKVStoreService(key), coretesting.NewNopLogger())
+
+	authorityAddr, err := addrCdc.BytesToString(authtypes.NewModuleAddress("gov"))
 	require.NoError(t, err)
 
-	ctx := app.BaseApp.NewContext(false, tmproto.Header{})
+	distrKeeper := keeper.NewKeeper(
+		encCfg.Codec,
+		env,
+		accountKeeper,
+		bankKeeper,
+		stakingKeeper,
+		testCometService,
+		"fee_collector",
+		authorityAddr,
+	)
 
-	tstaking := teststaking.NewHelper(t, ctx, stakingKeeper)
-	addr := simtestutil.AddTestAddrs(bankKeeper, stakingKeeper, ctx, 2, sdk.NewInt(100000000))
-	valAddrs := simtestutil.ConvertAddrsToValAddrs(addr)
+	// reset fee pool
+	require.NoError(t, distrKeeper.FeePool.Set(ctx, disttypes.InitialFeePool()))
+	require.NoError(t, distrKeeper.Params.Set(ctx, disttypes.DefaultParams()))
 
 	// create validator with 50% commission
-	tstaking.Commission = stakingtypes.NewCommissionRates(sdk.NewDecWithPrec(5, 1), sdk.NewDecWithPrec(5, 1), math.LegacyNewDec(0))
-	tstaking.CreateValidator(valAddrs[0], valConsPk1, sdk.NewInt(100), true)
+	valAddr := sdk.ValAddress(valConsAddr0)
+	addr0 := sdk.AccAddress(valAddr)
+	operatorAddr, err := stakingKeeper.ValidatorAddressCodec().BytesToString(valConsPk0.Address())
+	require.NoError(t, err)
+	val, err := distrtestutil.CreateValidator(valConsPk0, operatorAddr, math.NewInt(100))
+	require.NoError(t, err)
 
-	// end block to bond validator
-	staking.EndBlocker(ctx, stakingKeeper)
+	addrStr, err := addrCdc.BytesToString(addr0)
+	require.NoError(t, err)
+	valAddrStr, err := stakingKeeper.ValidatorAddressCodec().BytesToString(valAddr)
+	require.NoError(t, err)
+
+	val.Commission = stakingtypes.NewCommission(math.LegacyNewDecWithPrec(5, 1), math.LegacyNewDecWithPrec(5, 1), math.LegacyNewDec(0))
+
+	del0 := stakingtypes.NewDelegation(addrStr, valAddrStr, val.DelegatorShares)
+
+	// set mock calls
+	stakingKeeper.EXPECT().Validator(gomock.Any(), valAddr).Return(val, nil).Times(4)
+	stakingKeeper.EXPECT().Delegation(gomock.Any(), addr0, valAddr).Return(del0, nil).Times(1)
+
+	// run the necessary hooks manually (given that we are not running an actual staking module)
+	err = distrtestutil.CallCreateValidatorHooks(ctx, distrKeeper, addr0, valAddr)
+	require.NoError(t, err)
 
 	// next block
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 1)
-
-	// fetch validator and delegation
-	val := stakingKeeper.Validator(ctx, valAddrs[0])
-	del1 := stakingKeeper.Delegation(ctx, sdk.AccAddress(valAddrs[0]), valAddrs[0])
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 1})
 
 	// allocate some rewards
 	initial := int64(20)
 	tokens := sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDec(initial)}}
-	distrKeeper.AllocateTokensToValidator(ctx, val, tokens)
+	require.NoError(t, distrKeeper.AllocateTokensToValidator(ctx, val, tokens))
 
 	// second delegation
-	tstaking.Ctx = ctx
-	tstaking.Delegate(sdk.AccAddress(valAddrs[1]), valAddrs[0], sdk.NewInt(100))
-	del2 := stakingKeeper.Delegation(ctx, sdk.AccAddress(valAddrs[1]), valAddrs[0])
+	addr1 := sdk.AccAddress(valConsAddr1)
+	_, del1, err := distrtestutil.Delegate(ctx, distrKeeper, addr1, &val, math.NewInt(100), nil, stakingKeeper, addrCdc)
+	require.NoError(t, err)
 
-	// fetch updated validator
-	val = stakingKeeper.Validator(ctx, valAddrs[0])
+	stakingKeeper.EXPECT().Delegation(gomock.Any(), addr1, valAddr).Return(del1, nil)
+	stakingKeeper.EXPECT().Validator(gomock.Any(), valAddr).Return(val, nil).Times(1)
 
-	// end block
-	staking.EndBlocker(ctx, stakingKeeper)
+	// call necessary hooks to update a delegation
+	err = distrKeeper.Hooks().AfterDelegationModified(ctx, addr1, valAddr)
+	require.NoError(t, err)
 
 	// next block
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 1)
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 1})
 
 	// allocate some more rewards
-	distrKeeper.AllocateTokensToValidator(ctx, val, tokens)
+	require.NoError(t, distrKeeper.AllocateTokensToValidator(ctx, val, tokens))
 
 	// end period
-	endingPeriod := distrKeeper.IncrementValidatorPeriod(ctx, val)
+	endingPeriod, _ := distrKeeper.IncrementValidatorPeriod(ctx, val)
 
 	// calculate delegation rewards for del1
-	rewards := distrKeeper.CalculateDelegationRewards(ctx, val, del1, endingPeriod)
+	rewards, err := distrKeeper.CalculateDelegationRewards(ctx, val, del0, endingPeriod)
+	require.NoError(t, err)
 
-	// rewards for del1 should be 3/4 initial
+	// rewards for del0 should be 3/4 initial
 	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDec(initial * 3 / 4)}}, rewards)
 
 	// calculate delegation rewards for del2
-	rewards = distrKeeper.CalculateDelegationRewards(ctx, val, del2, endingPeriod)
+	rewards, err = distrKeeper.CalculateDelegationRewards(ctx, val, del1, endingPeriod)
+	require.NoError(t, err)
 
 	// rewards for del2 should be 1/4 initial
 	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDec(initial * 1 / 4)}}, rewards)
 
 	// commission should be equal to initial (50% twice)
-	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDec(initial)}}, distrKeeper.GetValidatorAccumulatedCommission(ctx, valAddrs[0]).Commission)
+	valCommission, err := distrKeeper.ValidatorsAccumulatedCommission.Get(ctx, valAddr)
+	require.NoError(t, err)
+	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDec(initial)}}, valCommission.Commission)
 }
 
 func TestWithdrawDelegationRewardsBasic(t *testing.T) {
-	var (
-		accountKeeper authkeeper.AccountKeeper
-		bankKeeper    bankkeeper.Keeper
-		distrKeeper   keeper.Keeper
-		stakingKeeper *stakingkeeper.Keeper
-	)
+	ctrl := gomock.NewController(t)
+	key := storetypes.NewKVStoreKey(disttypes.StoreKey)
+	testCtx := testutil.DefaultContextWithDB(t, key, storetypes.NewTransientStoreKey("transient_test"))
+	encCfg := moduletestutil.MakeTestEncodingConfig(codectestutil.CodecOptions{}, distribution.AppModule{})
+	ctx := testCtx.Ctx.WithHeaderInfo(header.Info{Height: 1})
+	addrCdc := address.NewBech32Codec(sdk.Bech32MainPrefix)
 
-	app, err := simtestutil.Setup(testutil.AppConfig,
-		&accountKeeper,
-		&bankKeeper,
-		&distrKeeper,
-		&stakingKeeper,
-	)
+	bankKeeper := distrtestutil.NewMockBankKeeper(ctrl)
+	stakingKeeper := distrtestutil.NewMockStakingKeeper(ctrl)
+	accountKeeper := distrtestutil.NewMockAccountKeeper(ctrl)
+
+	accountKeeper.EXPECT().GetModuleAddress("distribution").Return(distrAcc.GetAddress())
+	stakingKeeper.EXPECT().ValidatorAddressCodec().Return(address.NewBech32Codec(sdk.Bech32PrefixValAddr)).AnyTimes()
+	accountKeeper.EXPECT().AddressCodec().Return(addrCdc)
+
+	env := runtime.NewEnvironment(runtime.NewKVStoreService(key), coretesting.NewNopLogger())
+
+	authorityAddr, err := addrCdc.BytesToString(authtypes.NewModuleAddress("gov"))
 	require.NoError(t, err)
 
-	ctx := app.BaseApp.NewContext(false, tmproto.Header{})
-
-	distrKeeper.DeleteAllValidatorHistoricalRewards(ctx)
-
-	balancePower := int64(1000)
-	balanceTokens := stakingKeeper.TokensFromConsensusPower(ctx, balancePower)
-	addr := simtestutil.AddTestAddrs(bankKeeper, stakingKeeper, ctx, 1, sdk.NewInt(1000000000))
-	valAddrs := simtestutil.ConvertAddrsToValAddrs(addr)
-	tstaking := teststaking.NewHelper(t, ctx, stakingKeeper)
-
-	// set module account coins
-	distrAcc := distrKeeper.GetDistributionAccount(ctx)
-	require.NoError(t, banktestutil.FundModuleAccount(bankKeeper, ctx, distrAcc.GetName(), sdk.NewCoins(sdk.NewCoin(sdk.DefaultBondDenom, balanceTokens))))
-	accountKeeper.SetModuleAccount(ctx, distrAcc)
-
-	// create validator with 50% commission
-	power := int64(100)
-	tstaking.Commission = stakingtypes.NewCommissionRates(sdk.NewDecWithPrec(5, 1), sdk.NewDecWithPrec(5, 1), math.LegacyNewDec(0))
-	valTokens := tstaking.CreateValidatorWithValPower(valAddrs[0], valConsPk1, power, true)
-
-	// assert correct initial balance
-	expTokens := balanceTokens.Sub(valTokens)
-	require.Equal(t,
-		sdk.Coins{sdk.NewCoin(sdk.DefaultBondDenom, expTokens)},
-		bankKeeper.GetAllBalances(ctx, sdk.AccAddress(valAddrs[0])),
+	distrKeeper := keeper.NewKeeper(
+		encCfg.Codec,
+		env,
+		accountKeeper,
+		bankKeeper,
+		stakingKeeper,
+		testCometService,
+		"fee_collector",
+		authorityAddr,
 	)
 
-	// end block to bond validator
-	staking.EndBlocker(ctx, stakingKeeper)
+	// reset fee pool
+	require.NoError(t, distrKeeper.FeePool.Set(ctx, disttypes.InitialFeePool()))
+	require.NoError(t, distrKeeper.Params.Set(ctx, disttypes.DefaultParams()))
+
+	// create validator with 50% commission
+	valAddr := sdk.ValAddress(valConsAddr0)
+	addr := sdk.AccAddress(valAddr)
+	operatorAddr, err := stakingKeeper.ValidatorAddressCodec().BytesToString(valConsPk0.Address())
+	require.NoError(t, err)
+	val, err := distrtestutil.CreateValidator(valConsPk0, operatorAddr, math.NewInt(100))
+	require.NoError(t, err)
+
+	val.Commission = stakingtypes.NewCommission(math.LegacyNewDecWithPrec(5, 1), math.LegacyNewDecWithPrec(5, 1), math.LegacyNewDec(0))
+
+	addrStr, err := addrCdc.BytesToString(addr)
+	require.NoError(t, err)
+	valAddrStr, err := stakingKeeper.ValidatorAddressCodec().BytesToString(valAddr)
+	require.NoError(t, err)
+
+	// delegation mock
+	del := stakingtypes.NewDelegation(addrStr, valAddrStr, val.DelegatorShares)
+	stakingKeeper.EXPECT().Validator(gomock.Any(), valAddr).Return(val, nil).Times(5)
+	stakingKeeper.EXPECT().Delegation(gomock.Any(), addr, valAddr).Return(del, nil).Times(3)
+
+	// run the necessary hooks manually (given that we are not running an actual staking module)
+	err = distrtestutil.CallCreateValidatorHooks(ctx, distrKeeper, addr, valAddr)
+	require.NoError(t, err)
 
 	// next block
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 1)
-
-	// fetch validator and delegation
-	val := stakingKeeper.Validator(ctx, valAddrs[0])
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 1})
 
 	// allocate some rewards
-	initial := stakingKeeper.TokensFromConsensusPower(ctx, 10)
+	initial := sdk.TokensFromConsensusPower(10, sdk.DefaultPowerReduction)
 	tokens := sdk.DecCoins{sdk.NewDecCoin(sdk.DefaultBondDenom, initial)}
 
-	distrKeeper.AllocateTokensToValidator(ctx, val, tokens)
+	require.NoError(t, distrKeeper.AllocateTokensToValidator(ctx, val, tokens))
 
 	// historical count should be 2 (initial + latest for delegation)
-	require.Equal(t, uint64(2), distrKeeper.GetValidatorHistoricalReferenceCount(ctx))
+	require.Equal(t, 2, getValHistoricalReferenceCount(distrKeeper, ctx))
 
-	// withdraw rewards
-	_, err = distrKeeper.WithdrawDelegationRewards(ctx, sdk.AccAddress(valAddrs[0]), valAddrs[0])
+	// withdraw rewards (the bank keeper should be called with the right amount of tokens to transfer)
+	expRewards := sdk.Coins{sdk.NewCoin(sdk.DefaultBondDenom, initial.QuoRaw(2))}
+	bankKeeper.EXPECT().SendCoinsFromModuleToAccount(ctx, disttypes.ModuleName, addr, expRewards)
+	_, err = distrKeeper.WithdrawDelegationRewards(ctx, sdk.AccAddress(valAddr), valAddr)
 	require.Nil(t, err)
 
 	// historical count should still be 2 (added one record, cleared one)
-	require.Equal(t, uint64(2), distrKeeper.GetValidatorHistoricalReferenceCount(ctx))
+	require.Equal(t, 2, getValHistoricalReferenceCount(distrKeeper, ctx))
 
-	// assert correct balance
-	exp := balanceTokens.Sub(valTokens).Add(initial.QuoRaw(2))
-	require.Equal(t,
-		sdk.Coins{sdk.NewCoin(sdk.DefaultBondDenom, exp)},
-		bankKeeper.GetAllBalances(ctx, sdk.AccAddress(valAddrs[0])),
-	)
-
-	// withdraw commission
-	_, err = distrKeeper.WithdrawValidatorCommission(ctx, valAddrs[0])
+	// withdraw commission (the bank keeper should be called with the right amount of tokens to transfer)
+	expCommission := sdk.Coins{sdk.NewCoin(sdk.DefaultBondDenom, initial.QuoRaw(2))}
+	bankKeeper.EXPECT().SendCoinsFromModuleToAccount(ctx, disttypes.ModuleName, addr, expCommission)
+	_, err = distrKeeper.WithdrawValidatorCommission(ctx, valAddr)
 	require.Nil(t, err)
-
-	// assert correct balance
-	exp = balanceTokens.Sub(valTokens).Add(initial)
-	require.Equal(t,
-		sdk.Coins{sdk.NewCoin(sdk.DefaultBondDenom, exp)},
-		bankKeeper.GetAllBalances(ctx, sdk.AccAddress(valAddrs[0])),
-	)
 }
 
 func TestCalculateRewardsAfterManySlashesInSameBlock(t *testing.T) {
-	var (
-		bankKeeper    bankkeeper.Keeper
-		distrKeeper   keeper.Keeper
-		stakingKeeper *stakingkeeper.Keeper
-	)
+	ctrl := gomock.NewController(t)
+	key := storetypes.NewKVStoreKey(disttypes.StoreKey)
+	testCtx := testutil.DefaultContextWithDB(t, key, storetypes.NewTransientStoreKey("transient_test"))
+	encCfg := moduletestutil.MakeTestEncodingConfig(codectestutil.CodecOptions{}, distribution.AppModule{})
+	ctx := testCtx.Ctx.WithHeaderInfo(header.Info{Height: 1})
+	addrCdc := address.NewBech32Codec(sdk.Bech32MainPrefix)
 
-	app, err := simtestutil.Setup(testutil.AppConfig,
-		&bankKeeper,
-		&distrKeeper,
-		&stakingKeeper,
-	)
+	bankKeeper := distrtestutil.NewMockBankKeeper(ctrl)
+	stakingKeeper := distrtestutil.NewMockStakingKeeper(ctrl)
+	accountKeeper := distrtestutil.NewMockAccountKeeper(ctrl)
+
+	accountKeeper.EXPECT().GetModuleAddress("distribution").Return(distrAcc.GetAddress())
+	stakingKeeper.EXPECT().ValidatorAddressCodec().Return(address.NewBech32Codec(sdk.Bech32PrefixValAddr)).AnyTimes()
+	accountKeeper.EXPECT().AddressCodec().Return(addrCdc)
+
+	env := runtime.NewEnvironment(runtime.NewKVStoreService(key), coretesting.NewNopLogger())
+
+	authorityAddr, err := addrCdc.BytesToString(authtypes.NewModuleAddress("gov"))
 	require.NoError(t, err)
 
-	ctx := app.BaseApp.NewContext(false, tmproto.Header{})
+	distrKeeper := keeper.NewKeeper(
+		encCfg.Codec,
+		env,
+		accountKeeper,
+		bankKeeper,
+		stakingKeeper,
+		testCometService,
+		"fee_collector",
+		authorityAddr,
+	)
 
-	addr := simtestutil.AddTestAddrs(bankKeeper, stakingKeeper, ctx, 1, sdk.NewInt(1000000000))
-	valAddrs := simtestutil.ConvertAddrsToValAddrs(addr)
-	tstaking := teststaking.NewHelper(t, ctx, stakingKeeper)
+	// reset fee pool
+	require.NoError(t, distrKeeper.FeePool.Set(ctx, disttypes.InitialFeePool()))
+	require.NoError(t, distrKeeper.Params.Set(ctx, disttypes.DefaultParams()))
 
 	// create validator with 50% commission
-	valPower := int64(100)
-	tstaking.Commission = stakingtypes.NewCommissionRates(sdk.NewDecWithPrec(5, 1), sdk.NewDecWithPrec(5, 1), math.LegacyNewDec(0))
-	tstaking.CreateValidatorWithValPower(valAddrs[0], valConsPk1, valPower, true)
+	valAddr := sdk.ValAddress(valConsAddr0)
+	addr := sdk.AccAddress(valAddr)
+	operatorAddr, err := stakingKeeper.ValidatorAddressCodec().BytesToString(valConsPk0.Address())
+	require.NoError(t, err)
+	val, err := distrtestutil.CreateValidator(valConsPk0, operatorAddr, math.NewInt(100))
+	require.NoError(t, err)
 
-	// end block to bond validator
-	staking.EndBlocker(ctx, stakingKeeper)
+	val.Commission = stakingtypes.NewCommission(math.LegacyNewDecWithPrec(5, 1), math.LegacyNewDecWithPrec(5, 1), math.LegacyNewDec(0))
+
+	addrStr, err := addrCdc.BytesToString(addr)
+	require.NoError(t, err)
+	valAddrStr, err := stakingKeeper.ValidatorAddressCodec().BytesToString(valAddr)
+	require.NoError(t, err)
+
+	// delegation mock
+	del := stakingtypes.NewDelegation(addrStr, valAddrStr, val.DelegatorShares)
+	stakingKeeper.EXPECT().Validator(gomock.Any(), valAddr).Return(val, nil).Times(5)
+	stakingKeeper.EXPECT().Delegation(gomock.Any(), addr, valAddr).Return(del, nil)
+
+	// run the necessary hooks manually (given that we are not running an actual staking module)
+	err = distrtestutil.CallCreateValidatorHooks(ctx, distrKeeper, addr, valAddr)
+	require.NoError(t, err)
 
 	// next block
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 1)
-
-	// fetch validator and delegation
-	val := stakingKeeper.Validator(ctx, valAddrs[0])
-	del := stakingKeeper.Delegation(ctx, sdk.AccAddress(valAddrs[0]), valAddrs[0])
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 1})
 
 	// end period
-	endingPeriod := distrKeeper.IncrementValidatorPeriod(ctx, val)
+	endingPeriod, _ := distrKeeper.IncrementValidatorPeriod(ctx, val)
 
 	// calculate delegation rewards
-	rewards := distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+	rewards, err := distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+	require.NoError(t, err)
 
 	// rewards should be zero
 	require.True(t, rewards.IsZero())
 
 	// start out block height
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 3)
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 3})
 
 	// allocate some rewards
-	initial := sdk.NewDecFromInt(stakingKeeper.TokensFromConsensusPower(ctx, 10))
+	initial := math.LegacyNewDecFromInt(sdk.TokensFromConsensusPower(10, sdk.DefaultPowerReduction))
 	tokens := sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: initial}}
-	distrKeeper.AllocateTokensToValidator(ctx, val, tokens)
+	require.NoError(t, distrKeeper.AllocateTokensToValidator(ctx, val, tokens))
 
-	// slash the validator by 50%
-	stakingKeeper.Slash(ctx, valConsAddr1, ctx.BlockHeight(), valPower, sdk.NewDecWithPrec(5, 1))
+	valPower := int64(100)
+	// slash the validator by 50% (simulated with manual calls; we assume the validator is bonded)
+	distrtestutil.SlashValidator(
+		ctx,
+		valConsAddr0,
+		ctx.BlockHeight(),
+		valPower,
+		math.LegacyNewDecWithPrec(5, 1),
+		&val,
+		&distrKeeper,
+		stakingKeeper,
+	)
 
 	// slash the validator by 50% again
-	stakingKeeper.Slash(ctx, valConsAddr1, ctx.BlockHeight(), valPower/2, sdk.NewDecWithPrec(5, 1))
-
-	// fetch the validator again
-	val = stakingKeeper.Validator(ctx, valAddrs[0])
+	// stakingKeeper.Slash(ctx, valConsAddr0, ctx.BlockHeight(), valPower/2, math.LegacyNewDecWithPrec(5, 1))
+	distrtestutil.SlashValidator(
+		ctx,
+		valConsAddr0,
+		ctx.BlockHeight(),
+		valPower/2,
+		math.LegacyNewDecWithPrec(5, 1),
+		&val,
+		&distrKeeper,
+		stakingKeeper,
+	)
 
 	// increase block height
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 3)
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 3})
 
 	// allocate some more rewards
-	distrKeeper.AllocateTokensToValidator(ctx, val, tokens)
+	require.NoError(t, distrKeeper.AllocateTokensToValidator(ctx, val, tokens))
 
 	// end period
-	endingPeriod = distrKeeper.IncrementValidatorPeriod(ctx, val)
+	endingPeriod, _ = distrKeeper.IncrementValidatorPeriod(ctx, val)
 
 	// calculate delegation rewards
-	rewards = distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+	rewards, err = distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+	require.NoError(t, err)
 
 	// rewards should be half the tokens
 	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: initial}}, rewards)
 
 	// commission should be the other half
-	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: initial}}, distrKeeper.GetValidatorAccumulatedCommission(ctx, valAddrs[0]).Commission)
+	valCommission, err := distrKeeper.ValidatorsAccumulatedCommission.Get(ctx, valAddr)
+	require.NoError(t, err)
+	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: initial}}, valCommission.Commission)
 }
 
 func TestCalculateRewardsMultiDelegatorMultiSlash(t *testing.T) {
-	var (
-		bankKeeper    bankkeeper.Keeper
-		distrKeeper   keeper.Keeper
-		stakingKeeper *stakingkeeper.Keeper
+	ctrl := gomock.NewController(t)
+	key := storetypes.NewKVStoreKey(disttypes.StoreKey)
+	testCtx := testutil.DefaultContextWithDB(t, key, storetypes.NewTransientStoreKey("transient_test"))
+	encCfg := moduletestutil.MakeTestEncodingConfig(codectestutil.CodecOptions{}, distribution.AppModule{})
+	ctx := testCtx.Ctx.WithHeaderInfo(header.Info{Height: 1})
+	addrCdc := address.NewBech32Codec(sdk.Bech32MainPrefix)
+
+	bankKeeper := distrtestutil.NewMockBankKeeper(ctrl)
+	stakingKeeper := distrtestutil.NewMockStakingKeeper(ctrl)
+	accountKeeper := distrtestutil.NewMockAccountKeeper(ctrl)
+
+	accountKeeper.EXPECT().GetModuleAddress("distribution").Return(distrAcc.GetAddress())
+	stakingKeeper.EXPECT().ValidatorAddressCodec().Return(address.NewBech32Codec(sdk.Bech32PrefixValAddr)).AnyTimes()
+	accountKeeper.EXPECT().AddressCodec().Return(addrCdc)
+
+	env := runtime.NewEnvironment(runtime.NewKVStoreService(key), coretesting.NewNopLogger())
+
+	authorityAddr, err := addrCdc.BytesToString(authtypes.NewModuleAddress("gov"))
+	require.NoError(t, err)
+
+	distrKeeper := keeper.NewKeeper(
+		encCfg.Codec,
+		env,
+		accountKeeper,
+		bankKeeper,
+		stakingKeeper,
+		testCometService,
+		"fee_collector",
+		authorityAddr,
 	)
 
-	app, err := simtestutil.Setup(testutil.AppConfig,
-		&bankKeeper,
+	// reset fee pool
+	require.NoError(t, distrKeeper.FeePool.Set(ctx, disttypes.InitialFeePool()))
+	require.NoError(t, distrKeeper.Params.Set(ctx, disttypes.DefaultParams()))
+
+	valPower := int64(100)
+
+	// create validator with 50% commission
+	valAddr := sdk.ValAddress(valConsAddr0)
+	addr := sdk.AccAddress(valAddr)
+	operatorAddr, err := stakingKeeper.ValidatorAddressCodec().BytesToString(valConsPk0.Address())
+	require.NoError(t, err)
+	val, err := distrtestutil.CreateValidator(valConsPk0, operatorAddr, sdk.TokensFromConsensusPower(valPower, sdk.DefaultPowerReduction))
+	require.NoError(t, err)
+	val.Commission = stakingtypes.NewCommission(math.LegacyNewDecWithPrec(5, 1), math.LegacyNewDecWithPrec(5, 1), math.LegacyNewDec(0))
+
+	addrStr, err := addrCdc.BytesToString(addr)
+	require.NoError(t, err)
+	valAddrStr, err := stakingKeeper.ValidatorAddressCodec().BytesToString(valAddr)
+	require.NoError(t, err)
+
+	// validator and delegation mocks
+	del := stakingtypes.NewDelegation(addrStr, valAddrStr, val.DelegatorShares)
+	stakingKeeper.EXPECT().Validator(gomock.Any(), valAddr).Return(val, nil).Times(3)
+	stakingKeeper.EXPECT().Delegation(gomock.Any(), addr, valAddr).Return(del, nil)
+
+	// run the necessary hooks manually (given that we are not running an actual staking module)
+	err = distrtestutil.CallCreateValidatorHooks(ctx, distrKeeper, addr, valAddr)
+	require.NoError(t, err)
+	stakingKeeper.EXPECT().Validator(gomock.Any(), valAddr).Return(val, nil).Times(2)
+
+	// next block
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 1})
+
+	// allocate some rewards
+	initial := math.LegacyNewDecFromInt(sdk.TokensFromConsensusPower(30, sdk.DefaultPowerReduction))
+	tokens := sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: initial}}
+	require.NoError(t, distrKeeper.AllocateTokensToValidator(ctx, val, tokens))
+
+	// slash the validator
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 3})
+
+	distrtestutil.SlashValidator(
+		ctx,
+		valConsAddr0,
+		ctx.BlockHeight(),
+		valPower,
+		math.LegacyNewDecWithPrec(5, 1),
+		&val,
 		&distrKeeper,
-		&stakingKeeper,
+		stakingKeeper,
+	)
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 3})
+
+	// update validator mock
+	stakingKeeper.EXPECT().Validator(gomock.Any(), valAddr).Return(val, nil).Times(1)
+
+	// second delegation
+	_, del2, err := distrtestutil.Delegate(
+		ctx,
+		distrKeeper,
+		sdk.AccAddress(valConsAddr1),
+		&val,
+		sdk.TokensFromConsensusPower(100, sdk.DefaultPowerReduction),
+		nil,
+		stakingKeeper,
+		addrCdc,
 	)
 	require.NoError(t, err)
 
-	ctx := app.BaseApp.NewContext(false, tmproto.Header{})
+	// new delegation mock and update validator mock
+	stakingKeeper.EXPECT().Delegation(gomock.Any(), sdk.AccAddress(valConsAddr1), valAddr).Return(del2, nil)
+	stakingKeeper.EXPECT().Validator(gomock.Any(), valAddr).Return(val, nil).Times(1)
 
-	tstaking := teststaking.NewHelper(t, ctx, stakingKeeper)
-	addr := simtestutil.AddTestAddrs(bankKeeper, stakingKeeper, ctx, 2, sdk.NewInt(1000000000))
-	valAddrs := simtestutil.ConvertAddrsToValAddrs(addr)
-
-	// create validator with 50% commission
-	tstaking.Commission = stakingtypes.NewCommissionRates(sdk.NewDecWithPrec(5, 1), sdk.NewDecWithPrec(5, 1), math.LegacyNewDec(0))
-	valPower := int64(100)
-	tstaking.CreateValidatorWithValPower(valAddrs[0], valConsPk1, valPower, true)
-
-	// end block to bond validator
-	staking.EndBlocker(ctx, stakingKeeper)
+	// call necessary hooks to update a delegation
+	err = distrKeeper.Hooks().AfterDelegationModified(ctx, sdk.AccAddress(valConsAddr1), valAddr)
+	require.NoError(t, err)
 
 	// next block
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 1)
-
-	// fetch validator and delegation
-	val := stakingKeeper.Validator(ctx, valAddrs[0])
-	del1 := stakingKeeper.Delegation(ctx, sdk.AccAddress(valAddrs[0]), valAddrs[0])
-
-	// allocate some rewards
-	initial := sdk.NewDecFromInt(stakingKeeper.TokensFromConsensusPower(ctx, 30))
-	tokens := sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: initial}}
-	distrKeeper.AllocateTokensToValidator(ctx, val, tokens)
-
-	// slash the validator
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 3)
-	stakingKeeper.Slash(ctx, valConsAddr1, ctx.BlockHeight(), valPower, sdk.NewDecWithPrec(5, 1))
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 3)
-
-	// second delegation
-	tstaking.DelegateWithPower(sdk.AccAddress(valAddrs[1]), valAddrs[0], 100)
-
-	del2 := stakingKeeper.Delegation(ctx, sdk.AccAddress(valAddrs[1]), valAddrs[0])
-
-	// end block
-	staking.EndBlocker(ctx, stakingKeeper)
-
-	// next block
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 1)
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 1})
 
 	// allocate some more rewards
-	distrKeeper.AllocateTokensToValidator(ctx, val, tokens)
+	require.NoError(t, distrKeeper.AllocateTokensToValidator(ctx, val, tokens))
 
 	// slash the validator again
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 3)
-	stakingKeeper.Slash(ctx, valConsAddr1, ctx.BlockHeight(), valPower, sdk.NewDecWithPrec(5, 1))
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 3)
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 3})
 
-	// fetch updated validator
-	val = stakingKeeper.Validator(ctx, valAddrs[0])
+	distrtestutil.SlashValidator(
+		ctx,
+		valConsAddr0,
+		ctx.BlockHeight(),
+		valPower,
+		math.LegacyNewDecWithPrec(5, 1),
+		&val,
+		&distrKeeper,
+		stakingKeeper,
+	)
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 3})
 
 	// end period
-	endingPeriod := distrKeeper.IncrementValidatorPeriod(ctx, val)
+	endingPeriod, _ := distrKeeper.IncrementValidatorPeriod(ctx, val)
 
 	// calculate delegation rewards for del1
-	rewards := distrKeeper.CalculateDelegationRewards(ctx, val, del1, endingPeriod)
+	rewards, err := distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+	require.NoError(t, err)
 
 	// rewards for del1 should be 2/3 initial (half initial first period, 1/6 initial second period)
 	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: initial.QuoInt64(2).Add(initial.QuoInt64(6))}}, rewards)
 
 	// calculate delegation rewards for del2
-	rewards = distrKeeper.CalculateDelegationRewards(ctx, val, del2, endingPeriod)
+	rewards, err = distrKeeper.CalculateDelegationRewards(ctx, val, del2, endingPeriod)
+	require.NoError(t, err)
 
 	// rewards for del2 should be initial / 3
 	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: initial.QuoInt64(3)}}, rewards)
 
 	// commission should be equal to initial (twice 50% commission, unaffected by slashing)
-	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: initial}}, distrKeeper.GetValidatorAccumulatedCommission(ctx, valAddrs[0]).Commission)
+	valCommission, err := distrKeeper.ValidatorsAccumulatedCommission.Get(ctx, valAddr)
+	require.NoError(t, err)
+	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: initial}}, valCommission.Commission)
 }
 
 func TestCalculateRewardsMultiDelegatorMultWithdraw(t *testing.T) {
-	var (
-		accountKeeper authkeeper.AccountKeeper
-		bankKeeper    bankkeeper.Keeper
-		distrKeeper   keeper.Keeper
-		stakingKeeper *stakingkeeper.Keeper
+	ctrl := gomock.NewController(t)
+	key := storetypes.NewKVStoreKey(disttypes.StoreKey)
+	testCtx := testutil.DefaultContextWithDB(t, key, storetypes.NewTransientStoreKey("transient_test"))
+	encCfg := moduletestutil.MakeTestEncodingConfig(codectestutil.CodecOptions{}, distribution.AppModule{})
+	ctx := testCtx.Ctx.WithHeaderInfo(header.Info{Height: 1})
+
+	bankKeeper := distrtestutil.NewMockBankKeeper(ctrl)
+	stakingKeeper := distrtestutil.NewMockStakingKeeper(ctrl)
+	accountKeeper := distrtestutil.NewMockAccountKeeper(ctrl)
+	addrCdc := address.NewBech32Codec(sdk.Bech32MainPrefix)
+
+	accountKeeper.EXPECT().GetModuleAddress("distribution").Return(distrAcc.GetAddress())
+	accountKeeper.EXPECT().AddressCodec().Return(addrCdc)
+	stakingKeeper.EXPECT().ValidatorAddressCodec().Return(address.NewBech32Codec(sdk.Bech32PrefixValAddr)).AnyTimes()
+
+	env := runtime.NewEnvironment(runtime.NewKVStoreService(key), coretesting.NewNopLogger())
+
+	authorityAddr, err := addrCdc.BytesToString(authtypes.NewModuleAddress("gov"))
+	require.NoError(t, err)
+
+	distrKeeper := keeper.NewKeeper(
+		encCfg.Codec,
+		env,
+		accountKeeper,
+		bankKeeper,
+		stakingKeeper,
+		testCometService,
+		"fee_collector",
+		authorityAddr,
 	)
 
-	app, err := simtestutil.Setup(testutil.AppConfig,
-		&accountKeeper,
-		&bankKeeper,
-		&distrKeeper,
-		&stakingKeeper,
+	// reset fee pool
+	require.NoError(t, distrKeeper.FeePool.Set(ctx, disttypes.InitialFeePool()))
+	require.NoError(t, distrKeeper.Params.Set(ctx, disttypes.DefaultParams()))
+
+	// create validator with 50% commission
+	valAddr := sdk.ValAddress(valConsAddr0)
+	addr := sdk.AccAddress(valAddr)
+	operatorAddr, err := stakingKeeper.ValidatorAddressCodec().BytesToString(valConsPk0.Address())
+	require.NoError(t, err)
+	val, err := distrtestutil.CreateValidator(valConsPk0, operatorAddr, math.NewInt(100))
+	require.NoError(t, err)
+	val.Commission = stakingtypes.NewCommission(math.LegacyNewDecWithPrec(5, 1), math.LegacyNewDecWithPrec(5, 1), math.LegacyNewDec(0))
+
+	addrStr, err := addrCdc.BytesToString(addr)
+	require.NoError(t, err)
+	valAddrStr, err := stakingKeeper.ValidatorAddressCodec().BytesToString(valAddr)
+	require.NoError(t, err)
+
+	// validator and delegation mocks
+	del := stakingtypes.NewDelegation(addrStr, valAddrStr, val.DelegatorShares)
+	stakingKeeper.EXPECT().Validator(gomock.Any(), valAddr).Return(val, nil).Times(3)
+	stakingKeeper.EXPECT().Delegation(gomock.Any(), addr, valAddr).Return(del, nil).Times(5)
+
+	// run the necessary hooks manually (given that we are not running an actual staking module)
+	err = distrtestutil.CallCreateValidatorHooks(ctx, distrKeeper, addr, valAddr)
+	require.NoError(t, err)
+	stakingKeeper.EXPECT().Validator(gomock.Any(), valAddr).Return(val, nil).Times(2)
+
+	// next block
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 1})
+
+	// allocate some rewards
+	initial := int64(20)
+	tokens := sdk.DecCoins{sdk.NewDecCoin(sdk.DefaultBondDenom, math.NewInt(initial))}
+	require.NoError(t, distrKeeper.AllocateTokensToValidator(ctx, val, tokens))
+
+	// historical count should be 2 (validator init, delegation init)
+	require.Equal(t, 2, getValHistoricalReferenceCount(distrKeeper, ctx))
+
+	// second delegation
+	_, del2, err := distrtestutil.Delegate(
+		ctx,
+		distrKeeper,
+		sdk.AccAddress(valConsAddr1),
+		&val,
+		math.NewInt(100),
+		nil,
+		stakingKeeper,
+		addrCdc,
 	)
 	require.NoError(t, err)
 
-	ctx := app.BaseApp.NewContext(false, tmproto.Header{})
+	// new delegation mock and update validator mock
+	stakingKeeper.EXPECT().Delegation(gomock.Any(), sdk.AccAddress(valConsAddr1), valAddr).Return(del2, nil).Times(3)
+	stakingKeeper.EXPECT().Validator(gomock.Any(), valAddr).Return(val, nil).Times(6)
 
-	distrKeeper.DeleteAllValidatorHistoricalRewards(ctx)
-
-	tstaking := teststaking.NewHelper(t, ctx, stakingKeeper)
-	addr := simtestutil.AddTestAddrs(bankKeeper, stakingKeeper, ctx, 2, sdk.NewInt(1000000000))
-	valAddrs := simtestutil.ConvertAddrsToValAddrs(addr)
-	initial := int64(20)
-
-	// set module account coins
-	distrAcc := distrKeeper.GetDistributionAccount(ctx)
-	require.NoError(t, banktestutil.FundModuleAccount(bankKeeper, ctx, distrAcc.GetName(), sdk.NewCoins(sdk.NewCoin(sdk.DefaultBondDenom, sdk.NewInt(1000)))))
-	accountKeeper.SetModuleAccount(ctx, distrAcc)
-
-	tokens := sdk.DecCoins{sdk.NewDecCoinFromDec(sdk.DefaultBondDenom, math.LegacyNewDec(initial))}
-
-	// create validator with 50% commission
-	tstaking.Commission = stakingtypes.NewCommissionRates(sdk.NewDecWithPrec(5, 1), sdk.NewDecWithPrec(5, 1), math.LegacyNewDec(0))
-	tstaking.CreateValidator(valAddrs[0], valConsPk1, sdk.NewInt(100), true)
-
-	// end block to bond validator
-	staking.EndBlocker(ctx, stakingKeeper)
-
-	// next block
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 1)
-
-	// fetch validator and delegation
-	val := stakingKeeper.Validator(ctx, valAddrs[0])
-	del1 := stakingKeeper.Delegation(ctx, sdk.AccAddress(valAddrs[0]), valAddrs[0])
-
-	// allocate some rewards
-	distrKeeper.AllocateTokensToValidator(ctx, val, tokens)
-
-	// historical count should be 2 (validator init, delegation init)
-	require.Equal(t, uint64(2), distrKeeper.GetValidatorHistoricalReferenceCount(ctx))
-
-	// second delegation
-	tstaking.Delegate(sdk.AccAddress(valAddrs[1]), valAddrs[0], sdk.NewInt(100))
+	// call necessary hooks to update a delegation
+	err = distrKeeper.Hooks().AfterDelegationModified(ctx, sdk.AccAddress(valConsAddr1), valAddr)
+	require.NoError(t, err)
 
 	// historical count should be 3 (second delegation init)
-	require.Equal(t, uint64(3), distrKeeper.GetValidatorHistoricalReferenceCount(ctx))
-
-	// fetch updated validator
-	val = stakingKeeper.Validator(ctx, valAddrs[0])
-	del2 := stakingKeeper.Delegation(ctx, sdk.AccAddress(valAddrs[1]), valAddrs[0])
-
-	// end block
-	staking.EndBlocker(ctx, stakingKeeper)
+	require.Equal(t, 3, getValHistoricalReferenceCount(distrKeeper, ctx))
 
 	// next block
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 1)
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 1})
 
 	// allocate some more rewards
-	distrKeeper.AllocateTokensToValidator(ctx, val, tokens)
+	require.NoError(t, distrKeeper.AllocateTokensToValidator(ctx, val, tokens))
 
 	// first delegator withdraws
-	_, err = distrKeeper.WithdrawDelegationRewards(ctx, sdk.AccAddress(valAddrs[0]), valAddrs[0])
+	expRewards := sdk.Coins{sdk.NewCoin(sdk.DefaultBondDenom, math.NewInt(initial*3/4))}
+	bankKeeper.EXPECT().SendCoinsFromModuleToAccount(ctx, disttypes.ModuleName, addr, expRewards)
+	_, err = distrKeeper.WithdrawDelegationRewards(ctx, addr, valAddr)
 	require.NoError(t, err)
 
 	// second delegator withdraws
-	_, err = distrKeeper.WithdrawDelegationRewards(ctx, sdk.AccAddress(valAddrs[1]), valAddrs[0])
+	expRewards = sdk.Coins{sdk.NewCoin(sdk.DefaultBondDenom, math.NewInt(initial*1/4))}
+	bankKeeper.EXPECT().SendCoinsFromModuleToAccount(ctx, disttypes.ModuleName, sdk.AccAddress(valConsAddr1), expRewards)
+	_, err = distrKeeper.WithdrawDelegationRewards(ctx, sdk.AccAddress(valConsAddr1), valAddr)
 	require.NoError(t, err)
 
 	// historical count should be 3 (validator init + two delegations)
-	require.Equal(t, uint64(3), distrKeeper.GetValidatorHistoricalReferenceCount(ctx))
+	require.Equal(t, 3, getValHistoricalReferenceCount(distrKeeper, ctx))
 
 	// validator withdraws commission
-	_, err = distrKeeper.WithdrawValidatorCommission(ctx, valAddrs[0])
+	expCommission := sdk.Coins{sdk.NewCoin(sdk.DefaultBondDenom, math.NewInt(initial))}
+	bankKeeper.EXPECT().SendCoinsFromModuleToAccount(ctx, disttypes.ModuleName, addr, expCommission)
+	_, err = distrKeeper.WithdrawValidatorCommission(ctx, valAddr)
 	require.NoError(t, err)
 
 	// end period
-	endingPeriod := distrKeeper.IncrementValidatorPeriod(ctx, val)
+	endingPeriod, _ := distrKeeper.IncrementValidatorPeriod(ctx, val)
 
 	// calculate delegation rewards for del1
-	rewards := distrKeeper.CalculateDelegationRewards(ctx, val, del1, endingPeriod)
+	rewards, err := distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+	require.NoError(t, err)
 
 	// rewards for del1 should be zero
 	require.True(t, rewards.IsZero())
 
 	// calculate delegation rewards for del2
-	rewards = distrKeeper.CalculateDelegationRewards(ctx, val, del2, endingPeriod)
+	rewards, err = distrKeeper.CalculateDelegationRewards(ctx, val, del2, endingPeriod)
+	require.NoError(t, err)
 
 	// rewards for del2 should be zero
 	require.True(t, rewards.IsZero())
 
 	// commission should be zero
-	require.True(t, distrKeeper.GetValidatorAccumulatedCommission(ctx, valAddrs[0]).Commission.IsZero())
+	valCommission, err := distrKeeper.ValidatorsAccumulatedCommission.Get(ctx, valAddr)
+	require.NoError(t, err)
+	require.True(t, valCommission.Commission.IsZero())
 
 	// next block
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 1)
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 1})
 
 	// allocate some more rewards
-	distrKeeper.AllocateTokensToValidator(ctx, val, tokens)
+	require.NoError(t, distrKeeper.AllocateTokensToValidator(ctx, val, tokens))
 
 	// first delegator withdraws again
-	_, err = distrKeeper.WithdrawDelegationRewards(ctx, sdk.AccAddress(valAddrs[0]), valAddrs[0])
+	expCommission = sdk.Coins{sdk.NewCoin(sdk.DefaultBondDenom, math.NewInt(initial*1/4))}
+	bankKeeper.EXPECT().SendCoinsFromModuleToAccount(ctx, disttypes.ModuleName, addr, expCommission)
+	_, err = distrKeeper.WithdrawDelegationRewards(ctx, addr, valAddr)
 	require.NoError(t, err)
 
 	// end period
-	endingPeriod = distrKeeper.IncrementValidatorPeriod(ctx, val)
+	endingPeriod, _ = distrKeeper.IncrementValidatorPeriod(ctx, val)
 
 	// calculate delegation rewards for del1
-	rewards = distrKeeper.CalculateDelegationRewards(ctx, val, del1, endingPeriod)
+	rewards, err = distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+	require.NoError(t, err)
 
 	// rewards for del1 should be zero
 	require.True(t, rewards.IsZero())
 
 	// calculate delegation rewards for del2
-	rewards = distrKeeper.CalculateDelegationRewards(ctx, val, del2, endingPeriod)
+	rewards, err = distrKeeper.CalculateDelegationRewards(ctx, val, del2, endingPeriod)
+	require.NoError(t, err)
 
 	// rewards for del2 should be 1/4 initial
 	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDec(initial / 4)}}, rewards)
 
 	// commission should be half initial
-	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDec(initial / 2)}}, distrKeeper.GetValidatorAccumulatedCommission(ctx, valAddrs[0]).Commission)
+	valCommission, err = distrKeeper.ValidatorsAccumulatedCommission.Get(ctx, valAddr)
+	require.NoError(t, err)
+	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDec(initial / 2)}}, valCommission.Commission)
 
 	// next block
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 1)
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 1})
 
 	// allocate some more rewards
-	distrKeeper.AllocateTokensToValidator(ctx, val, tokens)
+	require.NoError(t, distrKeeper.AllocateTokensToValidator(ctx, val, tokens))
 
 	// withdraw commission
-	_, err = distrKeeper.WithdrawValidatorCommission(ctx, valAddrs[0])
+	expCommission = sdk.Coins{sdk.NewCoin(sdk.DefaultBondDenom, math.NewInt(initial))}
+	bankKeeper.EXPECT().SendCoinsFromModuleToAccount(ctx, disttypes.ModuleName, addr, expCommission)
+	_, err = distrKeeper.WithdrawValidatorCommission(ctx, valAddr)
 	require.NoError(t, err)
 
 	// end period
-	endingPeriod = distrKeeper.IncrementValidatorPeriod(ctx, val)
+	endingPeriod, _ = distrKeeper.IncrementValidatorPeriod(ctx, val)
 
 	// calculate delegation rewards for del1
-	rewards = distrKeeper.CalculateDelegationRewards(ctx, val, del1, endingPeriod)
+	rewards, err = distrKeeper.CalculateDelegationRewards(ctx, val, del, endingPeriod)
+	require.NoError(t, err)
 
 	// rewards for del1 should be 1/4 initial
 	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDec(initial / 4)}}, rewards)
 
 	// calculate delegation rewards for del2
-	rewards = distrKeeper.CalculateDelegationRewards(ctx, val, del2, endingPeriod)
+	rewards, err = distrKeeper.CalculateDelegationRewards(ctx, val, del2, endingPeriod)
+	require.NoError(t, err)
 
 	// rewards for del2 should be 1/2 initial
 	require.Equal(t, sdk.DecCoins{{Denom: sdk.DefaultBondDenom, Amount: math.LegacyNewDec(initial / 2)}}, rewards)
 
 	// commission should be zero
-	require.True(t, distrKeeper.GetValidatorAccumulatedCommission(ctx, valAddrs[0]).Commission.IsZero())
+	valCommission, err = distrKeeper.ValidatorsAccumulatedCommission.Get(ctx, valAddr)
+	require.NoError(t, err)
+	require.True(t, valCommission.Commission.IsZero())
 }
 
 func Test100PercentCommissionReward(t *testing.T) {
-	var (
-		accountKeeper authkeeper.AccountKeeper
-		bankKeeper    bankkeeper.Keeper
-		distrKeeper   keeper.Keeper
-		stakingKeeper *stakingkeeper.Keeper
-	)
+	ctrl := gomock.NewController(t)
+	key := storetypes.NewKVStoreKey(disttypes.StoreKey)
+	testCtx := testutil.DefaultContextWithDB(t, key, storetypes.NewTransientStoreKey("transient_test"))
+	encCfg := moduletestutil.MakeTestEncodingConfig(codectestutil.CodecOptions{}, distribution.AppModule{})
+	ctx := testCtx.Ctx.WithHeaderInfo(header.Info{Height: 1})
+	addrCdc := address.NewBech32Codec(sdk.Bech32MainPrefix)
 
-	app, err := simtestutil.Setup(testutil.AppConfig,
-		&accountKeeper,
-		&bankKeeper,
-		&distrKeeper,
-		&stakingKeeper,
-	)
+	bankKeeper := distrtestutil.NewMockBankKeeper(ctrl)
+	stakingKeeper := distrtestutil.NewMockStakingKeeper(ctrl)
+	accountKeeper := distrtestutil.NewMockAccountKeeper(ctrl)
+
+	accountKeeper.EXPECT().GetModuleAddress("distribution").Return(distrAcc.GetAddress())
+	accountKeeper.EXPECT().AddressCodec().Return(addrCdc)
+	stakingKeeper.EXPECT().ValidatorAddressCodec().Return(address.NewBech32Codec(sdk.Bech32PrefixValAddr)).AnyTimes()
+	stakingKeeper.EXPECT().BondDenom(gomock.Any()).Return("stake", nil).AnyTimes()
+
+	env := runtime.NewEnvironment(runtime.NewKVStoreService(key), coretesting.NewNopLogger())
+
+	authorityAddr, err := addrCdc.BytesToString(authtypes.NewModuleAddress("gov"))
 	require.NoError(t, err)
 
-	ctx := app.BaseApp.NewContext(false, tmproto.Header{})
+	distrKeeper := keeper.NewKeeper(
+		encCfg.Codec,
+		env,
+		accountKeeper,
+		bankKeeper,
+		stakingKeeper,
+		testCometService,
+		"fee_collector",
+		authorityAddr,
+	)
 
-	tstaking := teststaking.NewHelper(t, ctx, stakingKeeper)
-	addr := simtestutil.AddTestAddrs(bankKeeper, stakingKeeper, ctx, 2, sdk.NewInt(1000000000))
-	valAddrs := simtestutil.ConvertAddrsToValAddrs(addr)
-	initial := int64(20)
+	// reset fee pool
+	require.NoError(t, distrKeeper.FeePool.Set(ctx, disttypes.InitialFeePool()))
+	require.NoError(t, distrKeeper.Params.Set(ctx, disttypes.DefaultParams()))
 
-	// set module account coins
-	distrAcc := distrKeeper.GetDistributionAccount(ctx)
-	require.NoError(t, banktestutil.FundModuleAccount(bankKeeper, ctx, distrAcc.GetName(), sdk.NewCoins(sdk.NewCoin(sdk.DefaultBondDenom, sdk.NewInt(1000)))))
-	accountKeeper.SetModuleAccount(ctx, distrAcc)
+	// create validator with 50% commission
+	valAddr := sdk.ValAddress(valConsAddr0)
+	addr := sdk.AccAddress(valAddr)
+	operatorAddr, err := stakingKeeper.ValidatorAddressCodec().BytesToString(valConsPk0.Address())
+	require.NoError(t, err)
+	val, err := distrtestutil.CreateValidator(valConsPk0, operatorAddr, math.NewInt(100))
+	require.NoError(t, err)
+	val.Commission = stakingtypes.NewCommission(math.LegacyNewDecWithPrec(10, 1), math.LegacyNewDecWithPrec(10, 1), math.LegacyNewDec(0))
 
-	tokens := sdk.DecCoins{sdk.NewDecCoinFromDec(sdk.DefaultBondDenom, math.LegacyNewDec(initial))}
+	addrStr, err := addrCdc.BytesToString(addr)
+	require.NoError(t, err)
+	valAddrStr, err := stakingKeeper.ValidatorAddressCodec().BytesToString(valAddr)
+	require.NoError(t, err)
 
-	// create validator with 100% commission
-	tstaking.Commission = stakingtypes.NewCommissionRates(sdk.NewDecWithPrec(10, 1), sdk.NewDecWithPrec(10, 1), math.LegacyNewDec(0))
-	tstaking.CreateValidator(valAddrs[0], valConsPk1, sdk.NewInt(100), true)
-	stakingKeeper.Delegation(ctx, sdk.AccAddress(valAddrs[0]), valAddrs[0])
+	// validator and delegation mocks
+	del := stakingtypes.NewDelegation(addrStr, valAddrStr, val.DelegatorShares)
+	stakingKeeper.EXPECT().Validator(gomock.Any(), valAddr).Return(val, nil).Times(3)
+	stakingKeeper.EXPECT().Delegation(gomock.Any(), addr, valAddr).Return(del, nil).Times(3)
 
-	// end block to bond validator
-	staking.EndBlocker(ctx, stakingKeeper)
+	// run the necessary hooks manually (given that we are not running an actual staking module)
+	err = distrtestutil.CallCreateValidatorHooks(ctx, distrKeeper, addr, valAddr)
+	require.NoError(t, err)
+	stakingKeeper.EXPECT().Validator(gomock.Any(), valAddr).Return(val, nil).Times(2)
+
 	// next block
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 1)
-
-	// fetch validator
-	val := stakingKeeper.Validator(ctx, valAddrs[0])
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 1})
 
 	// allocate some rewards
-	distrKeeper.AllocateTokensToValidator(ctx, val, tokens)
-
-	// end block
-	staking.EndBlocker(ctx, stakingKeeper)
-
-	// next block
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 1)
-
-	// allocate some more rewards
-	distrKeeper.AllocateTokensToValidator(ctx, val, tokens)
+	initial := int64(20)
+	tokens := sdk.DecCoins{sdk.NewDecCoin(sdk.DefaultBondDenom, math.NewInt(initial))}
+	require.NoError(t, distrKeeper.AllocateTokensToValidator(ctx, val, tokens))
 
 	// next block
-	ctx = ctx.WithBlockHeight(ctx.BlockHeight() + 1)
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 1})
+
+	// allocate some rewards
+	require.NoError(t, distrKeeper.AllocateTokensToValidator(ctx, val, tokens))
+
+	// next block
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 1})
 
 	// allocate some more rewards
-	distrKeeper.AllocateTokensToValidator(ctx, val, tokens)
+	require.NoError(t, distrKeeper.AllocateTokensToValidator(ctx, val, tokens))
 
-	rewards, err := distrKeeper.WithdrawDelegationRewards(ctx, sdk.AccAddress(valAddrs[0]), valAddrs[0])
+	// next block
+	ctx = ctx.WithHeaderInfo(header.Info{Height: ctx.HeaderInfo().Height + 1})
+
+	// allocate some more rewards
+	require.NoError(t, distrKeeper.AllocateTokensToValidator(ctx, val, tokens))
+
+	rewards, err := distrKeeper.WithdrawDelegationRewards(ctx, addr, valAddr)
 	require.NoError(t, err)
 
-	denom, _ := sdk.GetBaseDenom()
-	zeroRewards := sdk.Coins{
-		sdk.Coin{
-			Denom:  denom,
-			Amount: math.ZeroInt(),
-		},
-	}
-	require.True(t, rewards.IsEqual(zeroRewards))
+	zeroRewards := sdk.Coins{sdk.NewCoin(sdk.DefaultBondDenom, math.ZeroInt())}
+	require.True(t, rewards.Equal(zeroRewards))
+
 	events := ctx.EventManager().Events()
 	lastEvent := events[len(events)-1]
-	hasValue := false
+
+	var hasValue bool
 	for _, attr := range lastEvent.Attributes {
-		if string(attr.Key) == "amount" && string(attr.Value) == "0" {
+		if attr.Key == "amount" && attr.Value == "0stake" {
 			hasValue = true
 		}
 	}

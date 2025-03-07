@@ -2,44 +2,11 @@ package types
 
 import (
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"time"
 
 	"github.com/cosmos/cosmos-sdk/types/kv"
-	dbm "github.com/tendermint/tm-db"
 )
-
-// This is set at compile time. Could be cleveldb, defaults is goleveldb.
-var backend = dbm.GoLevelDBBackend
-
-// SortedJSON takes any JSON and returns it sorted by keys. Also, all white-spaces
-// are removed.
-// This method can be used to canonicalize JSON to be returned by GetSignBytes,
-// e.g. for the ledger integration.
-// If the passed JSON isn't valid it will return an error.
-func SortJSON(toSortJSON []byte) ([]byte, error) {
-	var c interface{}
-	err := json.Unmarshal(toSortJSON, &c)
-	if err != nil {
-		return nil, err
-	}
-	js, err := json.Marshal(c)
-	if err != nil {
-		return nil, err
-	}
-	return js, nil
-}
-
-// MustSortJSON is like SortJSON but panic if an error occurs, e.g., if
-// the passed JSON isn't valid.
-func MustSortJSON(toSortJSON []byte) []byte {
-	js, err := SortJSON(toSortJSON)
-	if err != nil {
-		panic(err)
-	}
-	return js
-}
 
 // Uint64ToBigEndian - marshals uint64 to a bigendian byte slice so it can be sorted
 func Uint64ToBigEndian(i uint64) []byte {
@@ -77,13 +44,13 @@ func ParseTimeBytes(bz []byte) (time.Time, error) {
 }
 
 // Parses an encoded type using FormatTimeKey back into a time.Time
-func ParseTime(T any) (time.Time, error) { //nolint:gocritic
+func ParseTime(t any) (time.Time, error) {
 	var (
 		result time.Time
 		err    error
 	)
 
-	switch t := T.(type) {
+	switch t := t.(type) {
 	case time.Time:
 		result, err = t, nil
 	case []byte:
@@ -99,19 +66,6 @@ func ParseTime(T any) (time.Time, error) { //nolint:gocritic
 	}
 
 	return result.UTC().Round(0), nil
-}
-
-// NewLevelDB instantiate a new LevelDB instance according to DBBackend.
-//
-// Deprecated: Use NewDB (from "github.com/tendermint/tm-db") instead. Suggested backendType is tendermint config's DBBackend value.
-func NewLevelDB(name, dir string) (db dbm.DB, err error) {
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("couldn't create db: %v", r)
-		}
-	}()
-
-	return dbm.NewDB(name, backend, dir)
 }
 
 // copy bytes
@@ -142,7 +96,7 @@ func AppendLengthPrefixedBytes(args ...[]byte) []byte {
 }
 
 // ParseLengthPrefixedBytes panics when store key length is not equal to the given length.
-func ParseLengthPrefixedBytes(key []byte, startIndex int, sliceLength int) ([]byte, int) {
+func ParseLengthPrefixedBytes(key []byte, startIndex, sliceLength int) ([]byte, int) {
 	neededLength := startIndex + sliceLength
 	endIndex := neededLength - 1
 	kv.AssertKeyAtLeastLength(key, neededLength)

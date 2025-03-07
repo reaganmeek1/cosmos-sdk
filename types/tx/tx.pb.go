@@ -6,22 +6,27 @@ package tx
 import (
 	fmt "fmt"
 	_ "github.com/cosmos/cosmos-proto"
-	types "github.com/cosmos/cosmos-sdk/codec/types"
-	types1 "github.com/cosmos/cosmos-sdk/crypto/types"
+	types "github.com/cosmos/cosmos-sdk/crypto/types"
 	github_com_cosmos_cosmos_sdk_types "github.com/cosmos/cosmos-sdk/types"
-	types2 "github.com/cosmos/cosmos-sdk/types"
+	types1 "github.com/cosmos/cosmos-sdk/types"
+	_ "github.com/cosmos/cosmos-sdk/types/tx/amino"
 	signing "github.com/cosmos/cosmos-sdk/types/tx/signing"
-	_ "github.com/gogo/protobuf/gogoproto"
-	proto "github.com/gogo/protobuf/proto"
+	_ "github.com/cosmos/gogoproto/gogoproto"
+	proto "github.com/cosmos/gogoproto/proto"
+	github_com_cosmos_gogoproto_types "github.com/cosmos/gogoproto/types"
+	any "github.com/cosmos/gogoproto/types/any"
+	_ "google.golang.org/protobuf/types/known/timestamppb"
 	io "io"
 	math "math"
 	math_bits "math/bits"
+	time "time"
 )
 
 // Reference imports to suppress errors if they are not otherwise used.
 var _ = proto.Marshal
 var _ = fmt.Errorf
 var _ = math.Inf
+var _ = time.Kitchen
 
 // This is a compile-time assertion to ensure that this generated file
 // is compatible with the proto package it is being compiled against.
@@ -247,14 +252,12 @@ func (m *SignDoc) GetAccountNumber() uint64 {
 
 // SignDocDirectAux is the type used for generating sign bytes for
 // SIGN_MODE_DIRECT_AUX.
-//
-// Since: cosmos-sdk 0.46
 type SignDocDirectAux struct {
 	// body_bytes is protobuf serialization of a TxBody that matches the
 	// representation in TxRaw.
 	BodyBytes []byte `protobuf:"bytes,1,opt,name=body_bytes,json=bodyBytes,proto3" json:"body_bytes,omitempty"`
 	// public_key is the public key of the signing account.
-	PublicKey *types.Any `protobuf:"bytes,2,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
+	PublicKey *any.Any `protobuf:"bytes,2,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
 	// chain_id is the identifier of the chain this transaction targets.
 	// It prevents signed transactions from being used on another chain by an
 	// attacker.
@@ -263,13 +266,8 @@ type SignDocDirectAux struct {
 	AccountNumber uint64 `protobuf:"varint,4,opt,name=account_number,json=accountNumber,proto3" json:"account_number,omitempty"`
 	// sequence is the sequence number of the signing account.
 	Sequence uint64 `protobuf:"varint,5,opt,name=sequence,proto3" json:"sequence,omitempty"`
-	// Tip is the optional tip used for transactions fees paid in another denom.
-	// It should be left empty if the signer is not the tipper for this
-	// transaction.
-	//
-	// This field is ignored if the chain didn't enable tips, i.e. didn't add the
-	// `TipDecorator` in its posthandler.
-	Tip *Tip `protobuf:"bytes,6,opt,name=tip,proto3" json:"tip,omitempty"`
+	// tips have been deprecated and should not be used
+	Tip *Tip `protobuf:"bytes,6,opt,name=tip,proto3" json:"tip,omitempty"` // Deprecated: Do not use.
 }
 
 func (m *SignDocDirectAux) Reset()         { *m = SignDocDirectAux{} }
@@ -312,7 +310,7 @@ func (m *SignDocDirectAux) GetBodyBytes() []byte {
 	return nil
 }
 
-func (m *SignDocDirectAux) GetPublicKey() *types.Any {
+func (m *SignDocDirectAux) GetPublicKey() *any.Any {
 	if m != nil {
 		return m.PublicKey
 	}
@@ -340,6 +338,7 @@ func (m *SignDocDirectAux) GetSequence() uint64 {
 	return 0
 }
 
+// Deprecated: Do not use.
 func (m *SignDocDirectAux) GetTip() *Tip {
 	if m != nil {
 		return m.Tip
@@ -356,22 +355,40 @@ type TxBody struct {
 	// By convention, the first required signer (usually from the first message)
 	// is referred to as the primary signer and pays the fee for the whole
 	// transaction.
-	Messages []*types.Any `protobuf:"bytes,1,rep,name=messages,proto3" json:"messages,omitempty"`
+	Messages []*any.Any `protobuf:"bytes,1,rep,name=messages,proto3" json:"messages,omitempty"`
 	// memo is any arbitrary note/comment to be added to the transaction.
 	// WARNING: in clients, any publicly exposed text should not be called memo,
-	// but should be called `note` instead (see https://github.com/cosmos/cosmos-sdk/issues/9122).
+	// but should be called `note` instead (see
+	// https://github.com/cosmos/cosmos-sdk/issues/9122).
 	Memo string `protobuf:"bytes,2,opt,name=memo,proto3" json:"memo,omitempty"`
-	// timeout is the block height after which this transaction will not
-	// be processed by the chain
+	// timeout_height is the block height after which this transaction will not
+	// be processed by the chain.
 	TimeoutHeight uint64 `protobuf:"varint,3,opt,name=timeout_height,json=timeoutHeight,proto3" json:"timeout_height,omitempty"`
+	// unordered, when set to true, indicates that the transaction signer(s)
+	// intend for the transaction to be evaluated and executed in an un-ordered
+	// fashion. Specifically, the account's nonce will NOT be checked or
+	// incremented, which allows for fire-and-forget as well as concurrent
+	// transaction execution.
+	//
+	// Note, when set to true, the existing 'timeout_height' value must
+	// be set and will be used to correspond to a time_stamp in which the transaction is deemed
+	// valid.
+	Unordered bool `protobuf:"varint,4,opt,name=unordered,proto3" json:"unordered,omitempty"`
+	// timeout_timestamp is the block time after which this transaction will not
+	// be processed by the chain.
+	//
+	// Note, if unordered=true this value MUST be set
+	// and will act as a short-lived TTL in which the transaction is deemed valid
+	// and kept in memory to prevent duplicates.
+	TimeoutTimestamp *time.Time `protobuf:"bytes,5,opt,name=timeout_timestamp,json=timeoutTimestamp,proto3,stdtime" json:"timeout_timestamp,omitempty"`
 	// extension_options are arbitrary options that can be added by chains
 	// when the default options are not sufficient. If any of these are present
 	// and can't be handled, the transaction will be rejected
-	ExtensionOptions []*types.Any `protobuf:"bytes,1023,rep,name=extension_options,json=extensionOptions,proto3" json:"extension_options,omitempty"`
+	ExtensionOptions []*any.Any `protobuf:"bytes,1023,rep,name=extension_options,json=extensionOptions,proto3" json:"extension_options,omitempty"`
 	// extension_options are arbitrary options that can be added by chains
 	// when the default options are not sufficient. If any of these are present
 	// and can't be handled, they will be ignored
-	NonCriticalExtensionOptions []*types.Any `protobuf:"bytes,2047,rep,name=non_critical_extension_options,json=nonCriticalExtensionOptions,proto3" json:"non_critical_extension_options,omitempty"`
+	NonCriticalExtensionOptions []*any.Any `protobuf:"bytes,2047,rep,name=non_critical_extension_options,json=nonCriticalExtensionOptions,proto3" json:"non_critical_extension_options,omitempty"`
 }
 
 func (m *TxBody) Reset()         { *m = TxBody{} }
@@ -407,7 +424,7 @@ func (m *TxBody) XXX_DiscardUnknown() {
 
 var xxx_messageInfo_TxBody proto.InternalMessageInfo
 
-func (m *TxBody) GetMessages() []*types.Any {
+func (m *TxBody) GetMessages() []*any.Any {
 	if m != nil {
 		return m.Messages
 	}
@@ -428,14 +445,127 @@ func (m *TxBody) GetTimeoutHeight() uint64 {
 	return 0
 }
 
-func (m *TxBody) GetExtensionOptions() []*types.Any {
+func (m *TxBody) GetUnordered() bool {
+	if m != nil {
+		return m.Unordered
+	}
+	return false
+}
+
+func (m *TxBody) GetTimeoutTimestamp() *time.Time {
+	if m != nil {
+		return m.TimeoutTimestamp
+	}
+	return nil
+}
+
+func (m *TxBody) GetExtensionOptions() []*any.Any {
 	if m != nil {
 		return m.ExtensionOptions
 	}
 	return nil
 }
 
-func (m *TxBody) GetNonCriticalExtensionOptions() []*types.Any {
+func (m *TxBody) GetNonCriticalExtensionOptions() []*any.Any {
+	if m != nil {
+		return m.NonCriticalExtensionOptions
+	}
+	return nil
+}
+
+// TxBodyCompat is the body of a transaction that all signers sign over.
+// This message is used to represent the transaction body before the unordered
+// features was added. It is used to support backwards compatibility when user a newer
+// client with an older chain.
+type TxBodyCompat struct {
+	// messages is a list of messages to be executed. The required signers of
+	// those messages define the number and order of elements in AuthInfo's
+	// signer_infos and Tx's signatures. Each required signer address is added to
+	// the list only the first time it occurs.
+	// By convention, the first required signer (usually from the first message)
+	// is referred to as the primary signer and pays the fee for the whole
+	// transaction.
+	Messages []*any.Any `protobuf:"bytes,1,rep,name=messages,proto3" json:"messages,omitempty"`
+	// memo is any arbitrary note/comment to be added to the transaction.
+	// WARNING: in clients, any publicly exposed text should not be called memo,
+	// but should be called `note` instead (see
+	// https://github.com/cosmos/cosmos-sdk/issues/9122).
+	Memo string `protobuf:"bytes,2,opt,name=memo,proto3" json:"memo,omitempty"`
+	// timeout_height is the block height after which this transaction will not
+	// be processed by the chain.
+	TimeoutHeight uint64 `protobuf:"varint,3,opt,name=timeout_height,json=timeoutHeight,proto3" json:"timeout_height,omitempty"`
+	// extension_options are arbitrary options that can be added by chains
+	// when the default options are not sufficient. If any of these are present
+	// and can't be handled, the transaction will be rejected
+	ExtensionOptions []*any.Any `protobuf:"bytes,1023,rep,name=extension_options,json=extensionOptions,proto3" json:"extension_options,omitempty"`
+	// extension_options are arbitrary options that can be added by chains
+	// when the default options are not sufficient. If any of these are present
+	// and can't be handled, they will be ignored
+	NonCriticalExtensionOptions []*any.Any `protobuf:"bytes,2047,rep,name=non_critical_extension_options,json=nonCriticalExtensionOptions,proto3" json:"non_critical_extension_options,omitempty"`
+}
+
+func (m *TxBodyCompat) Reset()         { *m = TxBodyCompat{} }
+func (m *TxBodyCompat) String() string { return proto.CompactTextString(m) }
+func (*TxBodyCompat) ProtoMessage()    {}
+func (*TxBodyCompat) Descriptor() ([]byte, []int) {
+	return fileDescriptor_96d1575ffde80842, []int{5}
+}
+func (m *TxBodyCompat) XXX_Unmarshal(b []byte) error {
+	return m.Unmarshal(b)
+}
+func (m *TxBodyCompat) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	if deterministic {
+		return xxx_messageInfo_TxBodyCompat.Marshal(b, m, deterministic)
+	} else {
+		b = b[:cap(b)]
+		n, err := m.MarshalToSizedBuffer(b)
+		if err != nil {
+			return nil, err
+		}
+		return b[:n], nil
+	}
+}
+func (m *TxBodyCompat) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_TxBodyCompat.Merge(m, src)
+}
+func (m *TxBodyCompat) XXX_Size() int {
+	return m.Size()
+}
+func (m *TxBodyCompat) XXX_DiscardUnknown() {
+	xxx_messageInfo_TxBodyCompat.DiscardUnknown(m)
+}
+
+var xxx_messageInfo_TxBodyCompat proto.InternalMessageInfo
+
+func (m *TxBodyCompat) GetMessages() []*any.Any {
+	if m != nil {
+		return m.Messages
+	}
+	return nil
+}
+
+func (m *TxBodyCompat) GetMemo() string {
+	if m != nil {
+		return m.Memo
+	}
+	return ""
+}
+
+func (m *TxBodyCompat) GetTimeoutHeight() uint64 {
+	if m != nil {
+		return m.TimeoutHeight
+	}
+	return 0
+}
+
+func (m *TxBodyCompat) GetExtensionOptions() []*any.Any {
+	if m != nil {
+		return m.ExtensionOptions
+	}
+	return nil
+}
+
+func (m *TxBodyCompat) GetNonCriticalExtensionOptions() []*any.Any {
 	if m != nil {
 		return m.NonCriticalExtensionOptions
 	}
@@ -459,16 +589,14 @@ type AuthInfo struct {
 	//
 	// This field is ignored if the chain didn't enable tips, i.e. didn't add the
 	// `TipDecorator` in its posthandler.
-	//
-	// Since: cosmos-sdk 0.46
-	Tip *Tip `protobuf:"bytes,3,opt,name=tip,proto3" json:"tip,omitempty"`
+	Tip *Tip `protobuf:"bytes,3,opt,name=tip,proto3" json:"tip,omitempty"` // Deprecated: Do not use.
 }
 
 func (m *AuthInfo) Reset()         { *m = AuthInfo{} }
 func (m *AuthInfo) String() string { return proto.CompactTextString(m) }
 func (*AuthInfo) ProtoMessage()    {}
 func (*AuthInfo) Descriptor() ([]byte, []int) {
-	return fileDescriptor_96d1575ffde80842, []int{5}
+	return fileDescriptor_96d1575ffde80842, []int{6}
 }
 func (m *AuthInfo) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
@@ -511,6 +639,7 @@ func (m *AuthInfo) GetFee() *Fee {
 	return nil
 }
 
+// Deprecated: Do not use.
 func (m *AuthInfo) GetTip() *Tip {
 	if m != nil {
 		return m.Tip
@@ -524,7 +653,7 @@ type SignerInfo struct {
 	// public_key is the public key of the signer. It is optional for accounts
 	// that already exist in state. If unset, the verifier can use the required \
 	// signer address for this position and lookup the public key.
-	PublicKey *types.Any `protobuf:"bytes,1,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
+	PublicKey *any.Any `protobuf:"bytes,1,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
 	// mode_info describes the signing mode of the signer and is a nested
 	// structure to support nested multisig pubkey's
 	ModeInfo *ModeInfo `protobuf:"bytes,2,opt,name=mode_info,json=modeInfo,proto3" json:"mode_info,omitempty"`
@@ -538,7 +667,7 @@ func (m *SignerInfo) Reset()         { *m = SignerInfo{} }
 func (m *SignerInfo) String() string { return proto.CompactTextString(m) }
 func (*SignerInfo) ProtoMessage()    {}
 func (*SignerInfo) Descriptor() ([]byte, []int) {
-	return fileDescriptor_96d1575ffde80842, []int{6}
+	return fileDescriptor_96d1575ffde80842, []int{7}
 }
 func (m *SignerInfo) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
@@ -567,7 +696,7 @@ func (m *SignerInfo) XXX_DiscardUnknown() {
 
 var xxx_messageInfo_SignerInfo proto.InternalMessageInfo
 
-func (m *SignerInfo) GetPublicKey() *types.Any {
+func (m *SignerInfo) GetPublicKey() *any.Any {
 	if m != nil {
 		return m.PublicKey
 	}
@@ -594,6 +723,7 @@ type ModeInfo struct {
 	// multisig signer
 	//
 	// Types that are valid to be assigned to Sum:
+	//
 	//	*ModeInfo_Single_
 	//	*ModeInfo_Multi_
 	Sum isModeInfo_Sum `protobuf_oneof:"sum"`
@@ -603,7 +733,7 @@ func (m *ModeInfo) Reset()         { *m = ModeInfo{} }
 func (m *ModeInfo) String() string { return proto.CompactTextString(m) }
 func (*ModeInfo) ProtoMessage()    {}
 func (*ModeInfo) Descriptor() ([]byte, []int) {
-	return fileDescriptor_96d1575ffde80842, []int{7}
+	return fileDescriptor_96d1575ffde80842, []int{8}
 }
 func (m *ModeInfo) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
@@ -689,7 +819,7 @@ func (m *ModeInfo_Single) Reset()         { *m = ModeInfo_Single{} }
 func (m *ModeInfo_Single) String() string { return proto.CompactTextString(m) }
 func (*ModeInfo_Single) ProtoMessage()    {}
 func (*ModeInfo_Single) Descriptor() ([]byte, []int) {
-	return fileDescriptor_96d1575ffde80842, []int{7, 0}
+	return fileDescriptor_96d1575ffde80842, []int{8, 0}
 }
 func (m *ModeInfo_Single) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
@@ -728,7 +858,7 @@ func (m *ModeInfo_Single) GetMode() signing.SignMode {
 // Multi is the mode info for a multisig public key
 type ModeInfo_Multi struct {
 	// bitarray specifies which keys within the multisig are signing
-	Bitarray *types1.CompactBitArray `protobuf:"bytes,1,opt,name=bitarray,proto3" json:"bitarray,omitempty"`
+	Bitarray *types.CompactBitArray `protobuf:"bytes,1,opt,name=bitarray,proto3" json:"bitarray,omitempty"`
 	// mode_infos is the corresponding modes of the signers of the multisig
 	// which could include nested multisig public keys
 	ModeInfos []*ModeInfo `protobuf:"bytes,2,rep,name=mode_infos,json=modeInfos,proto3" json:"mode_infos,omitempty"`
@@ -738,7 +868,7 @@ func (m *ModeInfo_Multi) Reset()         { *m = ModeInfo_Multi{} }
 func (m *ModeInfo_Multi) String() string { return proto.CompactTextString(m) }
 func (*ModeInfo_Multi) ProtoMessage()    {}
 func (*ModeInfo_Multi) Descriptor() ([]byte, []int) {
-	return fileDescriptor_96d1575ffde80842, []int{7, 1}
+	return fileDescriptor_96d1575ffde80842, []int{8, 1}
 }
 func (m *ModeInfo_Multi) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
@@ -767,7 +897,7 @@ func (m *ModeInfo_Multi) XXX_DiscardUnknown() {
 
 var xxx_messageInfo_ModeInfo_Multi proto.InternalMessageInfo
 
-func (m *ModeInfo_Multi) GetBitarray() *types1.CompactBitArray {
+func (m *ModeInfo_Multi) GetBitarray() *types.CompactBitArray {
 	if m != nil {
 		return m.Bitarray
 	}
@@ -783,20 +913,22 @@ func (m *ModeInfo_Multi) GetModeInfos() []*ModeInfo {
 
 // Fee includes the amount of coins paid in fees and the maximum
 // gas to be used by the transaction. The ratio yields an effective "gasprice",
-// which must be above some miminum to be accepted into the mempool.
+// which must be above some minimum to be accepted into the mempool.
 type Fee struct {
 	// amount is the amount of coins to be paid as a fee
 	Amount github_com_cosmos_cosmos_sdk_types.Coins `protobuf:"bytes,1,rep,name=amount,proto3,castrepeated=github.com/cosmos/cosmos-sdk/types.Coins" json:"amount"`
 	// gas_limit is the maximum gas that can be used in transaction processing
 	// before an out of gas error occurs
 	GasLimit uint64 `protobuf:"varint,2,opt,name=gas_limit,json=gasLimit,proto3" json:"gas_limit,omitempty"`
-	// if unset, the first signer is responsible for paying the fees. If set, the specified account must pay the fees.
-	// the payer must be a tx signer (and thus have signed this field in AuthInfo).
-	// setting this field does *not* change the ordering of required signers for the transaction.
+	// if unset, the first signer is responsible for paying the fees. If set, the
+	// specified account must pay the fees. the payer must be a tx signer (and
+	// thus have signed this field in AuthInfo). setting this field does *not*
+	// change the ordering of required signers for the transaction.
 	Payer string `protobuf:"bytes,3,opt,name=payer,proto3" json:"payer,omitempty"`
-	// if set, the fee payer (either the first signer or the value of the payer field) requests that a fee grant be used
-	// to pay fees instead of the fee payer's own balance. If an appropriate fee grant does not exist or the chain does
-	// not support fee grants, this will fail
+	// if set, the fee payer (either the first signer or the value of the payer
+	// field) requests that a fee grant be used to pay fees instead of the fee
+	// payer's own balance. If an appropriate fee grant does not exist or the
+	// chain does not support fee grants, this will fail
 	Granter string `protobuf:"bytes,4,opt,name=granter,proto3" json:"granter,omitempty"`
 }
 
@@ -804,7 +936,7 @@ func (m *Fee) Reset()         { *m = Fee{} }
 func (m *Fee) String() string { return proto.CompactTextString(m) }
 func (*Fee) ProtoMessage()    {}
 func (*Fee) Descriptor() ([]byte, []int) {
-	return fileDescriptor_96d1575ffde80842, []int{8}
+	return fileDescriptor_96d1575ffde80842, []int{9}
 }
 func (m *Fee) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
@@ -863,7 +995,7 @@ func (m *Fee) GetGranter() string {
 
 // Tip is the tip used for meta-transactions.
 //
-// Since: cosmos-sdk 0.46
+// Deprecated: Do not use.
 type Tip struct {
 	// amount is the amount of the tip
 	Amount github_com_cosmos_cosmos_sdk_types.Coins `protobuf:"bytes,1,rep,name=amount,proto3,castrepeated=github.com/cosmos/cosmos-sdk/types.Coins" json:"amount"`
@@ -875,7 +1007,7 @@ func (m *Tip) Reset()         { *m = Tip{} }
 func (m *Tip) String() string { return proto.CompactTextString(m) }
 func (*Tip) ProtoMessage()    {}
 func (*Tip) Descriptor() ([]byte, []int) {
-	return fileDescriptor_96d1575ffde80842, []int{9}
+	return fileDescriptor_96d1575ffde80842, []int{10}
 }
 func (m *Tip) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
@@ -922,8 +1054,6 @@ func (m *Tip) GetTipper() string {
 // tipper) builds and sends to the fee payer (who will build and broadcast the
 // actual tx). AuxSignerData is not a valid tx in itself, and will be rejected
 // by the node if sent directly as-is.
-//
-// Since: cosmos-sdk 0.46
 type AuxSignerData struct {
 	// address is the bech32-encoded address of the auxiliary signer. If using
 	// AuxSignerData across different chains, the bech32 prefix of the target
@@ -943,7 +1073,7 @@ func (m *AuxSignerData) Reset()         { *m = AuxSignerData{} }
 func (m *AuxSignerData) String() string { return proto.CompactTextString(m) }
 func (*AuxSignerData) ProtoMessage()    {}
 func (*AuxSignerData) Descriptor() ([]byte, []int) {
-	return fileDescriptor_96d1575ffde80842, []int{10}
+	return fileDescriptor_96d1575ffde80842, []int{11}
 }
 func (m *AuxSignerData) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
@@ -1006,6 +1136,7 @@ func init() {
 	proto.RegisterType((*SignDoc)(nil), "cosmos.tx.v1beta1.SignDoc")
 	proto.RegisterType((*SignDocDirectAux)(nil), "cosmos.tx.v1beta1.SignDocDirectAux")
 	proto.RegisterType((*TxBody)(nil), "cosmos.tx.v1beta1.TxBody")
+	proto.RegisterType((*TxBodyCompat)(nil), "cosmos.tx.v1beta1.TxBodyCompat")
 	proto.RegisterType((*AuthInfo)(nil), "cosmos.tx.v1beta1.AuthInfo")
 	proto.RegisterType((*SignerInfo)(nil), "cosmos.tx.v1beta1.SignerInfo")
 	proto.RegisterType((*ModeInfo)(nil), "cosmos.tx.v1beta1.ModeInfo")
@@ -1019,71 +1150,81 @@ func init() {
 func init() { proto.RegisterFile("cosmos/tx/v1beta1/tx.proto", fileDescriptor_96d1575ffde80842) }
 
 var fileDescriptor_96d1575ffde80842 = []byte{
-	// 1015 bytes of a gzipped FileDescriptorProto
-	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xbc, 0x55, 0xcf, 0x6f, 0x1b, 0x45,
-	0x14, 0xf6, 0x66, 0x6d, 0xc7, 0x7e, 0x4d, 0xda, 0x74, 0x14, 0x21, 0xc7, 0x51, 0xdd, 0xe0, 0xaa,
-	0xe0, 0x4b, 0x76, 0xd3, 0xf4, 0x40, 0x41, 0x08, 0xb0, 0x1b, 0xaa, 0x54, 0xa5, 0x20, 0x4d, 0x72,
-	0xea, 0x65, 0x35, 0x5e, 0x4f, 0xd6, 0xa3, 0x7a, 0x67, 0x96, 0x9d, 0x59, 0xb0, 0xff, 0x08, 0xa4,
-	0x0a, 0x09, 0x71, 0xe1, 0xc0, 0x99, 0x33, 0x7f, 0x44, 0x4f, 0xa8, 0xe2, 0xc4, 0x09, 0xaa, 0xe4,
-	0x88, 0xc4, 0xbf, 0x00, 0x9a, 0xd9, 0xd9, 0x4d, 0x5a, 0x5c, 0x1b, 0x04, 0xea, 0x69, 0xe7, 0xc7,
-	0xf7, 0xbe, 0xf9, 0xde, 0xbc, 0x6f, 0xdf, 0x40, 0x3b, 0x14, 0x32, 0x16, 0xd2, 0x57, 0x53, 0xff,
-	0x8b, 0x5b, 0x43, 0xaa, 0xc8, 0x2d, 0x5f, 0x4d, 0xbd, 0x24, 0x15, 0x4a, 0xa0, 0xab, 0xf9, 0x9e,
-	0xa7, 0xa6, 0x9e, 0xdd, 0x6b, 0x6f, 0x46, 0x22, 0x12, 0x66, 0xd7, 0xd7, 0xa3, 0x1c, 0xd8, 0xde,
-	0xb5, 0x24, 0x61, 0x3a, 0x4b, 0x94, 0xf0, 0xe3, 0x6c, 0xa2, 0x98, 0x64, 0x51, 0xc9, 0x58, 0x2c,
-	0x58, 0x78, 0xc7, 0xc2, 0x87, 0x44, 0xd2, 0x12, 0x13, 0x0a, 0xc6, 0xed, 0xfe, 0xdb, 0xe7, 0x9a,
-	0x24, 0x8b, 0x38, 0xe3, 0xe7, 0x4c, 0x76, 0x6e, 0x81, 0x5b, 0x91, 0x10, 0xd1, 0x84, 0xfa, 0x66,
-	0x36, 0xcc, 0x4e, 0x7c, 0xc2, 0x67, 0xc5, 0x56, 0xce, 0x11, 0xe4, 0x5a, 0x6d, 0x22, 0x66, 0xd2,
-	0xfd, 0xca, 0x81, 0x95, 0xe3, 0x29, 0xda, 0x85, 0xea, 0x50, 0x8c, 0x66, 0x2d, 0x67, 0xc7, 0xe9,
-	0x5d, 0xda, 0xdf, 0xf2, 0xfe, 0x96, 0xac, 0x77, 0x3c, 0x1d, 0x88, 0xd1, 0x0c, 0x1b, 0x18, 0xba,
-	0x03, 0x4d, 0x92, 0xa9, 0x71, 0xc0, 0xf8, 0x89, 0x68, 0xad, 0x98, 0x98, 0xed, 0x39, 0x31, 0xfd,
-	0x4c, 0x8d, 0xef, 0xf3, 0x13, 0x81, 0x1b, 0xc4, 0x8e, 0x50, 0x07, 0x40, 0xcb, 0x26, 0x2a, 0x4b,
-	0xa9, 0x6c, 0xb9, 0x3b, 0x6e, 0x6f, 0x0d, 0x5f, 0x58, 0xe9, 0x72, 0xa8, 0x1d, 0x4f, 0x31, 0xf9,
-	0x12, 0x5d, 0x03, 0xd0, 0x47, 0x05, 0xc3, 0x99, 0xa2, 0xd2, 0xe8, 0x5a, 0xc3, 0x4d, 0xbd, 0x32,
-	0xd0, 0x0b, 0xe8, 0x2d, 0xb8, 0x52, 0x2a, 0xb0, 0x98, 0x15, 0x83, 0x59, 0x2f, 0x8e, 0xca, 0x71,
-	0xcb, 0xce, 0xfb, 0xda, 0x81, 0xd5, 0x23, 0x16, 0xf1, 0x03, 0x11, 0xfe, 0x5f, 0x47, 0x6e, 0x41,
-	0x23, 0x1c, 0x13, 0xc6, 0x03, 0x36, 0x6a, 0xb9, 0x3b, 0x4e, 0xaf, 0x89, 0x57, 0xcd, 0xfc, 0xfe,
-	0x08, 0xdd, 0x84, 0xcb, 0x24, 0x0c, 0x45, 0xc6, 0x55, 0xc0, 0xb3, 0x78, 0x48, 0xd3, 0x56, 0x75,
-	0xc7, 0xe9, 0x55, 0xf1, 0xba, 0x5d, 0xfd, 0xd4, 0x2c, 0x76, 0xff, 0x70, 0x60, 0xc3, 0x8a, 0x3a,
-	0x60, 0x29, 0x0d, 0x55, 0x3f, 0x9b, 0x2e, 0x53, 0x77, 0x1b, 0x20, 0xc9, 0x86, 0x13, 0x16, 0x06,
-	0x8f, 0xe9, 0xcc, 0xd6, 0x64, 0xd3, 0xcb, 0x3d, 0xe1, 0x15, 0x9e, 0xf0, 0xfa, 0x7c, 0x86, 0x9b,
-	0x39, 0xee, 0x01, 0x9d, 0xfd, 0x77, 0xa9, 0xa8, 0x0d, 0x0d, 0x49, 0x3f, 0xcf, 0x28, 0x0f, 0x69,
-	0xab, 0x66, 0x00, 0xe5, 0x1c, 0xf5, 0xc0, 0x55, 0x2c, 0x69, 0xd5, 0x8d, 0x96, 0x37, 0xe6, 0x79,
-	0x8a, 0x25, 0x58, 0x43, 0xba, 0xdf, 0xac, 0x40, 0x3d, 0x37, 0x18, 0xda, 0x83, 0x46, 0x4c, 0xa5,
-	0x24, 0x91, 0x49, 0xd2, 0x7d, 0x65, 0x16, 0x25, 0x0a, 0x21, 0xa8, 0xc6, 0x34, 0xce, 0x7d, 0xd8,
-	0xc4, 0x66, 0xac, 0xd5, 0x2b, 0x16, 0x53, 0x91, 0xa9, 0x60, 0x4c, 0x59, 0x34, 0x56, 0x26, 0xbd,
-	0x2a, 0x5e, 0xb7, 0xab, 0x87, 0x66, 0x11, 0x0d, 0xe0, 0x2a, 0x9d, 0x2a, 0xca, 0x25, 0x13, 0x3c,
-	0x10, 0x89, 0x62, 0x82, 0xcb, 0xd6, 0x9f, 0xab, 0x0b, 0x8e, 0xdd, 0x28, 0xf1, 0x9f, 0xe5, 0x70,
-	0xf4, 0x08, 0x3a, 0x5c, 0xf0, 0x20, 0x4c, 0x99, 0x62, 0x21, 0x99, 0x04, 0x73, 0x08, 0xaf, 0x2c,
-	0x20, 0xdc, 0xe6, 0x82, 0xdf, 0xb5, 0xb1, 0x1f, 0xbf, 0xc4, 0xdd, 0xfd, 0xde, 0x81, 0x46, 0xf1,
-	0x13, 0xa1, 0x8f, 0x60, 0x4d, 0x1b, 0x97, 0xa6, 0xc6, 0x81, 0xc5, 0xed, 0x5c, 0x9b, 0x73, 0xaf,
-	0x47, 0x06, 0x66, 0xfe, 0xbc, 0x4b, 0xb2, 0x1c, 0x4b, 0x5d, 0x90, 0x13, 0x4a, 0xad, 0x39, 0xe6,
-	0x15, 0xe4, 0x1e, 0xa5, 0x58, 0x43, 0x8a, 0xd2, 0xb9, 0xcb, 0x4b, 0xf7, 0xad, 0x03, 0x70, 0x7e,
-	0xde, 0x4b, 0x36, 0x74, 0xfe, 0x99, 0x0d, 0xef, 0x40, 0x33, 0x16, 0x23, 0xba, 0xac, 0x9d, 0x3c,
-	0x14, 0x23, 0x9a, 0xb7, 0x93, 0xd8, 0x8e, 0x5e, 0xb0, 0x9f, 0xfb, 0xa2, 0xfd, 0xba, 0xcf, 0x57,
-	0xa0, 0x51, 0x84, 0xa0, 0xf7, 0xa1, 0x2e, 0x19, 0x8f, 0x26, 0xd4, 0x6a, 0xea, 0x2e, 0xe0, 0xf7,
-	0x8e, 0x0c, 0xf2, 0xb0, 0x82, 0x6d, 0x0c, 0x7a, 0x17, 0x6a, 0xa6, 0x6d, 0x5b, 0x71, 0x6f, 0x2e,
-	0x0a, 0x7e, 0xa8, 0x81, 0x87, 0x15, 0x9c, 0x47, 0xb4, 0xfb, 0x50, 0xcf, 0xe9, 0xd0, 0x3b, 0x50,
-	0xd5, 0xba, 0x8d, 0x80, 0xcb, 0xfb, 0x37, 0x2e, 0x70, 0x14, 0x8d, 0xfc, 0x62, 0xfd, 0x34, 0x1f,
-	0x36, 0x01, 0xed, 0x27, 0x0e, 0xd4, 0x0c, 0x2b, 0x7a, 0x00, 0x8d, 0x21, 0x53, 0x24, 0x4d, 0x49,
-	0x71, 0xb7, 0x7e, 0x41, 0x93, 0x3f, 0x37, 0x5e, 0xf9, 0xba, 0x14, 0x5c, 0x77, 0x45, 0x9c, 0x90,
-	0x50, 0x0d, 0x98, 0xea, 0xeb, 0x30, 0x5c, 0x12, 0xa0, 0xf7, 0x00, 0xca, 0x5b, 0xd7, 0xad, 0xcc,
-	0x5d, 0x76, 0xed, 0xcd, 0xe2, 0xda, 0xe5, 0xa0, 0x06, 0xae, 0xcc, 0xe2, 0xee, 0xef, 0x0e, 0xb8,
-	0xf7, 0x28, 0x45, 0x21, 0xd4, 0x49, 0xac, 0xbb, 0x82, 0x35, 0x65, 0xf9, 0x80, 0xe8, 0x57, 0xed,
-	0x82, 0x14, 0xc6, 0x07, 0x7b, 0x4f, 0x7f, 0xbd, 0x5e, 0xf9, 0xe1, 0xb7, 0xeb, 0xbd, 0x88, 0xa9,
-	0x71, 0x36, 0xf4, 0x42, 0x11, 0xfb, 0xc5, 0x8b, 0x69, 0x3e, 0xbb, 0x72, 0xf4, 0xd8, 0x57, 0xb3,
-	0x84, 0x4a, 0x13, 0x20, 0xb1, 0xa5, 0x46, 0xdb, 0xd0, 0x8c, 0x88, 0x0c, 0x26, 0x2c, 0x66, 0xca,
-	0x14, 0xa2, 0x8a, 0x1b, 0x11, 0x91, 0x9f, 0xe8, 0x39, 0xf2, 0xa0, 0x96, 0x90, 0x19, 0x4d, 0xf3,
-	0x36, 0x36, 0x68, 0xfd, 0xfc, 0xe3, 0xee, 0xa6, 0xd5, 0xd0, 0x1f, 0x8d, 0x52, 0x2a, 0xe5, 0x91,
-	0x4a, 0x19, 0x8f, 0x70, 0x0e, 0x43, 0xfb, 0xb0, 0x1a, 0xa5, 0x84, 0x2b, 0xdb, 0xd7, 0x16, 0x45,
-	0x14, 0xc0, 0xee, 0x77, 0x0e, 0xb8, 0xc7, 0x2c, 0x79, 0x3d, 0xd9, 0xee, 0x41, 0x5d, 0xb1, 0x24,
-	0xa1, 0x69, 0xde, 0xd7, 0x16, 0xe8, 0xb3, 0xb8, 0xee, 0x4f, 0x0e, 0xac, 0xf7, 0xb3, 0x69, 0xfe,
-	0x33, 0x1e, 0x10, 0x45, 0x74, 0x92, 0x24, 0x87, 0x1a, 0xb7, 0x2c, 0x4c, 0xd2, 0x02, 0xd1, 0x07,
-	0xd0, 0xd0, 0x76, 0x0c, 0x46, 0x22, 0xb4, 0x6e, 0xbf, 0xf1, 0x8a, 0x0e, 0x73, 0xf1, 0x75, 0xc2,
-	0xab, 0xd2, 0x3e, 0xa2, 0x85, 0xcb, 0xdd, 0x7f, 0xe9, 0x72, 0xb4, 0x01, 0xae, 0x64, 0x91, 0xa9,
-	0xc6, 0x1a, 0xd6, 0xc3, 0xc1, 0x87, 0x4f, 0x4f, 0x3b, 0xce, 0xb3, 0xd3, 0x8e, 0xf3, 0xfc, 0xb4,
-	0xe3, 0x3c, 0x39, 0xeb, 0x54, 0x9e, 0x9d, 0x75, 0x2a, 0xbf, 0x9c, 0x75, 0x2a, 0x8f, 0x6e, 0x2e,
-	0xbf, 0x4e, 0x5f, 0x4d, 0x87, 0x75, 0xd3, 0x70, 0x6e, 0xff, 0x15, 0x00, 0x00, 0xff, 0xff, 0x4d,
-	0x26, 0x62, 0x70, 0xd8, 0x09, 0x00, 0x00,
+	// 1170 bytes of a gzipped FileDescriptorProto
+	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0xcc, 0x56, 0xcf, 0x8f, 0x14, 0xc5,
+	0x17, 0xdf, 0x9e, 0x9e, 0x99, 0x9d, 0x79, 0xcc, 0xc2, 0x6e, 0x7d, 0xe1, 0x9b, 0xd9, 0x41, 0x66,
+	0xd7, 0x21, 0xe8, 0x84, 0xb8, 0xdd, 0xb0, 0x18, 0x45, 0x62, 0xc4, 0x19, 0x90, 0x40, 0x10, 0x8d,
+	0xbd, 0x7b, 0xe2, 0xd2, 0xa9, 0xe9, 0xae, 0xed, 0xa9, 0x30, 0x5d, 0xd5, 0x76, 0x55, 0xeb, 0xf4,
+	0xd1, 0x8b, 0x9e, 0x4c, 0x88, 0x17, 0x13, 0xfd, 0x07, 0x8c, 0x27, 0x0e, 0x24, 0xfe, 0x0b, 0x78,
+	0x23, 0x9c, 0x8c, 0x07, 0x20, 0xec, 0x81, 0x3f, 0x43, 0xd3, 0xd5, 0xd5, 0xbd, 0x0b, 0x0c, 0xb3,
+	0x1a, 0x8d, 0x7a, 0xe9, 0x74, 0xbd, 0xfa, 0xbc, 0x57, 0x9f, 0x7a, 0xaf, 0xde, 0x0f, 0xe8, 0x78,
+	0x5c, 0x84, 0x5c, 0xd8, 0x72, 0x6a, 0x7f, 0x76, 0x76, 0x44, 0x24, 0x3e, 0x6b, 0xcb, 0xa9, 0x15,
+	0xc5, 0x5c, 0x72, 0xb4, 0x92, 0xef, 0x59, 0x72, 0x6a, 0xe9, 0xbd, 0xce, 0x6a, 0x2e, 0x72, 0x15,
+	0xc0, 0xd6, 0xfb, 0x6a, 0xd1, 0x59, 0xc1, 0x21, 0x65, 0xdc, 0x56, 0x5f, 0x2d, 0x3a, 0x1a, 0xf0,
+	0x80, 0xe7, 0xd0, 0xec, 0x4f, 0x4b, 0x37, 0xf4, 0x91, 0x5e, 0x9c, 0x46, 0x92, 0xdb, 0x61, 0x32,
+	0x91, 0x54, 0xd0, 0xa0, 0x3c, 0xbf, 0x10, 0x68, 0x78, 0x57, 0xc3, 0x47, 0x58, 0x90, 0x12, 0xe3,
+	0x71, 0xca, 0xf4, 0xfe, 0xeb, 0x7b, 0x37, 0x10, 0x34, 0x60, 0x94, 0xed, 0x59, 0xd2, 0x6b, 0x0d,
+	0x5c, 0x0d, 0x38, 0x0f, 0x26, 0xc4, 0x56, 0xab, 0x51, 0xb2, 0x63, 0x63, 0x96, 0xea, 0xad, 0xb5,
+	0xe7, 0xb7, 0x24, 0x0d, 0x89, 0x90, 0x38, 0x8c, 0x72, 0x40, 0xef, 0x6b, 0x03, 0x2a, 0xdb, 0x53,
+	0xb4, 0x01, 0xd5, 0x11, 0xf7, 0xd3, 0xb6, 0xb1, 0x6e, 0xf4, 0x0f, 0x6d, 0xae, 0x5a, 0x2f, 0x38,
+	0xc8, 0xda, 0x9e, 0x0e, 0xb9, 0x9f, 0x3a, 0x0a, 0x86, 0xce, 0x43, 0x13, 0x27, 0x72, 0xec, 0x52,
+	0xb6, 0xc3, 0xdb, 0x15, 0xa5, 0x73, 0x7c, 0x86, 0xce, 0x20, 0x91, 0xe3, 0x6b, 0x6c, 0x87, 0x3b,
+	0x0d, 0xac, 0xff, 0x50, 0x17, 0x20, 0x23, 0x8f, 0x65, 0x12, 0x13, 0xd1, 0x36, 0xd7, 0xcd, 0x7e,
+	0xcb, 0xd9, 0x27, 0xe9, 0x31, 0xa8, 0x6d, 0x4f, 0x1d, 0xfc, 0x39, 0x3a, 0x01, 0x90, 0x1d, 0xe5,
+	0x8e, 0x52, 0x49, 0x84, 0xe2, 0xd5, 0x72, 0x9a, 0x99, 0x64, 0x98, 0x09, 0xd0, 0x6b, 0x70, 0xa4,
+	0x64, 0xa0, 0x31, 0x15, 0x85, 0x59, 0x2a, 0x8e, 0xca, 0x71, 0x07, 0x9d, 0xf7, 0x8d, 0x01, 0x8b,
+	0x5b, 0x34, 0x60, 0x97, 0xb9, 0xf7, 0x77, 0x1d, 0xb9, 0x0a, 0x0d, 0x6f, 0x8c, 0x29, 0x73, 0xa9,
+	0xdf, 0x36, 0xd7, 0x8d, 0x7e, 0xd3, 0x59, 0x54, 0xeb, 0x6b, 0x3e, 0x3a, 0x05, 0x87, 0xb1, 0xe7,
+	0xf1, 0x84, 0x49, 0x97, 0x25, 0xe1, 0x88, 0xc4, 0xed, 0xea, 0xba, 0xd1, 0xaf, 0x3a, 0x4b, 0x5a,
+	0xfa, 0x91, 0x12, 0xf6, 0xbe, 0xaa, 0xc0, 0xb2, 0x26, 0x75, 0x99, 0xc6, 0xc4, 0x93, 0x83, 0x64,
+	0x7a, 0x10, 0xbb, 0x73, 0x00, 0x51, 0x32, 0x9a, 0x50, 0xcf, 0xbd, 0x45, 0x52, 0x1d, 0x93, 0xa3,
+	0x56, 0x1e, 0x7e, 0xab, 0x08, 0xbf, 0x35, 0x60, 0xa9, 0xd3, 0xcc, 0x71, 0xd7, 0x49, 0xfa, 0xd7,
+	0xa9, 0xa2, 0x0e, 0x34, 0x04, 0xf9, 0x34, 0x21, 0xcc, 0x23, 0xed, 0x9a, 0x02, 0x94, 0x6b, 0xf4,
+	0x06, 0x98, 0x92, 0x46, 0xed, 0xba, 0xe2, 0xf2, 0xff, 0x59, 0x6f, 0x8a, 0x46, 0xc3, 0x4a, 0xdb,
+	0x70, 0x32, 0xd8, 0x85, 0xff, 0x3d, 0xb8, 0xbb, 0x71, 0x24, 0xc7, 0x6c, 0x08, 0xff, 0xd6, 0xfa,
+	0x19, 0xeb, 0xcd, 0xb7, 0x7a, 0x5f, 0x9a, 0x50, 0xcf, 0x5f, 0x1e, 0x3a, 0x03, 0x8d, 0x90, 0x08,
+	0x81, 0x03, 0x75, 0x7b, 0xf3, 0xa5, 0xd7, 0x2b, 0x51, 0x08, 0x41, 0x35, 0x24, 0x61, 0xfe, 0x40,
+	0x9b, 0x8e, 0xfa, 0xcf, 0xae, 0x95, 0xa5, 0x00, 0x4f, 0xa4, 0x3b, 0x26, 0x34, 0x18, 0x4b, 0x75,
+	0xef, 0xaa, 0xb3, 0xa4, 0xa5, 0x57, 0x95, 0x10, 0xbd, 0x02, 0xcd, 0x84, 0xf1, 0xd8, 0x27, 0x31,
+	0xf1, 0xd5, 0xc5, 0x1b, 0xce, 0x9e, 0x00, 0x7d, 0x02, 0x2b, 0x85, 0x91, 0x32, 0x9f, 0xd4, 0xed,
+	0x0f, 0x6d, 0x76, 0x5e, 0xe0, 0xb4, 0x5d, 0x20, 0x86, 0x8d, 0x7b, 0x0f, 0xd7, 0x8c, 0xdb, 0x8f,
+	0xd6, 0x0c, 0x67, 0x59, 0xab, 0x97, 0x7b, 0x68, 0x08, 0x2b, 0x64, 0x2a, 0x09, 0x13, 0x94, 0x33,
+	0x97, 0x47, 0x92, 0x72, 0x26, 0xda, 0xbf, 0x2d, 0xce, 0xb9, 0xe7, 0x72, 0x89, 0xff, 0x38, 0x87,
+	0xa3, 0x9b, 0xd0, 0x65, 0x9c, 0xb9, 0x5e, 0x4c, 0x25, 0xf5, 0xf0, 0xc4, 0x9d, 0x61, 0xf0, 0xc8,
+	0x1c, 0x83, 0xc7, 0x19, 0x67, 0x97, 0xb4, 0xee, 0x07, 0xcf, 0xd9, 0xee, 0x7d, 0x5f, 0x81, 0x56,
+	0x1e, 0x88, 0x4b, 0x3c, 0x8c, 0xb0, 0xfc, 0x67, 0xc3, 0xf1, 0x5f, 0xf7, 0xce, 0x4f, 0x06, 0x34,
+	0x8a, 0x62, 0x87, 0xde, 0x87, 0x56, 0x56, 0x60, 0x48, 0xac, 0x2a, 0x45, 0xe1, 0x9d, 0x13, 0x33,
+	0xde, 0xff, 0x96, 0x82, 0xa9, 0x0a, 0x79, 0x48, 0x94, 0xff, 0x02, 0xf5, 0xc1, 0xdc, 0x21, 0x44,
+	0x27, 0xf1, 0xac, 0xc4, 0xb9, 0x42, 0x88, 0x93, 0x41, 0xd0, 0xc5, 0x3c, 0xc5, 0xcc, 0xb9, 0x29,
+	0x76, 0xec, 0xd7, 0x17, 0x33, 0x4b, 0x67, 0x5d, 0xef, 0x5b, 0x03, 0x60, 0x8f, 0xc6, 0x73, 0x55,
+	0xc4, 0xf8, 0x63, 0x55, 0xe4, 0x3c, 0x34, 0x43, 0xee, 0x93, 0x83, 0xba, 0xc1, 0x0d, 0xee, 0x93,
+	0xbc, 0x1b, 0x84, 0xfa, 0xef, 0x99, 0xea, 0x61, 0x3e, 0x5b, 0x3d, 0x7a, 0x8f, 0x2b, 0xd0, 0x28,
+	0x54, 0xd0, 0xbb, 0x50, 0x17, 0x94, 0x05, 0x13, 0xa2, 0x39, 0xf5, 0xe6, 0xd8, 0xb7, 0xb6, 0x14,
+	0xf2, 0xea, 0x82, 0xa3, 0x75, 0xd0, 0x3b, 0x50, 0x53, 0xbd, 0x57, 0x93, 0x7b, 0x75, 0x9e, 0xf2,
+	0x8d, 0x0c, 0x78, 0x75, 0xc1, 0xc9, 0x35, 0x3a, 0x03, 0xa8, 0xe7, 0xe6, 0xd0, 0xdb, 0x50, 0xcd,
+	0x78, 0x2b, 0x02, 0x87, 0x37, 0x4f, 0xee, 0xb3, 0x51, 0x74, 0xe3, 0xfd, 0x61, 0xcd, 0xec, 0x39,
+	0x4a, 0xa1, 0x73, 0xdb, 0x80, 0x9a, 0xb2, 0x8a, 0xae, 0x43, 0x63, 0x44, 0x25, 0x8e, 0x63, 0x5c,
+	0xf8, 0xd6, 0x2e, 0xcc, 0xe4, 0x33, 0x83, 0x55, 0x8e, 0x08, 0x85, 0x2d, 0x95, 0x6d, 0x9e, 0x1c,
+	0x52, 0x39, 0xc8, 0xd4, 0x9c, 0xd2, 0x00, 0xba, 0x00, 0x50, 0x7a, 0x3d, 0xeb, 0x44, 0xe6, 0x41,
+	0x6e, 0x6f, 0x16, 0x6e, 0x17, 0xc3, 0x1a, 0x98, 0x22, 0x09, 0x7b, 0x5f, 0x54, 0xc0, 0xbc, 0x42,
+	0x08, 0x4a, 0xa1, 0x8e, 0xc3, 0xac, 0xa8, 0xeb, 0xb7, 0x5a, 0xf6, 0xff, 0x6c, 0x34, 0xd9, 0x47,
+	0x85, 0xb2, 0xe1, 0x95, 0x7b, 0x0f, 0xd7, 0x16, 0x7e, 0x7c, 0xb4, 0xd6, 0x0f, 0xa8, 0x1c, 0x27,
+	0x23, 0xcb, 0xe3, 0xa1, 0x5d, 0x8c, 0x3d, 0xe5, 0x0b, 0xb3, 0x65, 0x1a, 0x11, 0xa1, 0x14, 0xc4,
+	0x77, 0x4f, 0xef, 0x9c, 0x6e, 0x4d, 0x48, 0x80, 0xbd, 0xd4, 0xcd, 0x86, 0x1b, 0xf1, 0xc3, 0xd3,
+	0x3b, 0xa7, 0x0d, 0x47, 0x1f, 0x88, 0x8e, 0x43, 0x33, 0xc0, 0xc2, 0x9d, 0xd0, 0x90, 0x4a, 0x15,
+	0x9e, 0xaa, 0xd3, 0x08, 0xb0, 0xf8, 0x30, 0x5b, 0x23, 0x0b, 0x6a, 0x11, 0x4e, 0x49, 0x9c, 0xf7,
+	0xa6, 0x61, 0xfb, 0xc1, 0xdd, 0x8d, 0xa3, 0x9a, 0xd9, 0xc0, 0xf7, 0x63, 0x22, 0xc4, 0x96, 0x8c,
+	0x29, 0x0b, 0x9c, 0x1c, 0x86, 0x36, 0x61, 0x31, 0x88, 0x31, 0x93, 0xba, 0x59, 0xcd, 0xd3, 0x28,
+	0x80, 0xbd, 0x9f, 0x0d, 0x30, 0xb7, 0x69, 0xf4, 0x6f, 0xfa, 0xe0, 0x0c, 0xd4, 0x25, 0x8d, 0x22,
+	0x12, 0xe7, 0xa5, 0x71, 0x0e, 0x6b, 0x8d, 0xbb, 0x70, 0xec, 0xc1, 0xac, 0x8c, 0xee, 0xed, 0x1a,
+	0xb0, 0x34, 0x48, 0xa6, 0x79, 0x3e, 0x5f, 0xc6, 0x12, 0x67, 0x1e, 0xc1, 0xb9, 0x05, 0xf5, 0xe0,
+	0xe6, 0x7a, 0x44, 0x03, 0xd1, 0x7b, 0xd0, 0xc8, 0x5e, 0xb4, 0xeb, 0x73, 0x4f, 0x27, 0xcc, 0xc9,
+	0x97, 0xd4, 0xae, 0xfd, 0xf3, 0x89, 0xb3, 0x28, 0xf4, 0x18, 0x55, 0x24, 0x8a, 0xf9, 0x27, 0x13,
+	0x05, 0x2d, 0x83, 0x29, 0x68, 0xa0, 0x42, 0xd7, 0x72, 0xb2, 0xdf, 0x99, 0x33, 0xc1, 0xf0, 0xe2,
+	0xbd, 0x27, 0x5d, 0xe3, 0xfe, 0x93, 0xae, 0xf1, 0xf8, 0x49, 0xd7, 0xb8, 0xbd, 0xdb, 0x5d, 0xb8,
+	0xbf, 0xdb, 0x5d, 0xf8, 0x65, 0xb7, 0xbb, 0x70, 0xf3, 0xd4, 0xc1, 0x01, 0xb1, 0xe5, 0x74, 0x54,
+	0x57, 0x85, 0xec, 0xdc, 0xef, 0x01, 0x00, 0x00, 0xff, 0xff, 0xdc, 0x58, 0xe5, 0xd5, 0x23, 0x0c,
+	0x00, 0x00,
 }
 
 func (m *Tx) Marshal() (dAtA []byte, err error) {
@@ -1324,6 +1465,107 @@ func (m *TxBody) MarshalTo(dAtA []byte) (int, error) {
 }
 
 func (m *TxBody) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if len(m.NonCriticalExtensionOptions) > 0 {
+		for iNdEx := len(m.NonCriticalExtensionOptions) - 1; iNdEx >= 0; iNdEx-- {
+			{
+				size, err := m.NonCriticalExtensionOptions[iNdEx].MarshalToSizedBuffer(dAtA[:i])
+				if err != nil {
+					return 0, err
+				}
+				i -= size
+				i = encodeVarintTx(dAtA, i, uint64(size))
+			}
+			i--
+			dAtA[i] = 0x7f
+			i--
+			dAtA[i] = 0xfa
+		}
+	}
+	if len(m.ExtensionOptions) > 0 {
+		for iNdEx := len(m.ExtensionOptions) - 1; iNdEx >= 0; iNdEx-- {
+			{
+				size, err := m.ExtensionOptions[iNdEx].MarshalToSizedBuffer(dAtA[:i])
+				if err != nil {
+					return 0, err
+				}
+				i -= size
+				i = encodeVarintTx(dAtA, i, uint64(size))
+			}
+			i--
+			dAtA[i] = 0x3f
+			i--
+			dAtA[i] = 0xfa
+		}
+	}
+	if m.TimeoutTimestamp != nil {
+		n5, err5 := github_com_cosmos_gogoproto_types.StdTimeMarshalTo(*m.TimeoutTimestamp, dAtA[i-github_com_cosmos_gogoproto_types.SizeOfStdTime(*m.TimeoutTimestamp):])
+		if err5 != nil {
+			return 0, err5
+		}
+		i -= n5
+		i = encodeVarintTx(dAtA, i, uint64(n5))
+		i--
+		dAtA[i] = 0x2a
+	}
+	if m.Unordered {
+		i--
+		if m.Unordered {
+			dAtA[i] = 1
+		} else {
+			dAtA[i] = 0
+		}
+		i--
+		dAtA[i] = 0x20
+	}
+	if m.TimeoutHeight != 0 {
+		i = encodeVarintTx(dAtA, i, uint64(m.TimeoutHeight))
+		i--
+		dAtA[i] = 0x18
+	}
+	if len(m.Memo) > 0 {
+		i -= len(m.Memo)
+		copy(dAtA[i:], m.Memo)
+		i = encodeVarintTx(dAtA, i, uint64(len(m.Memo)))
+		i--
+		dAtA[i] = 0x12
+	}
+	if len(m.Messages) > 0 {
+		for iNdEx := len(m.Messages) - 1; iNdEx >= 0; iNdEx-- {
+			{
+				size, err := m.Messages[iNdEx].MarshalToSizedBuffer(dAtA[:i])
+				if err != nil {
+					return 0, err
+				}
+				i -= size
+				i = encodeVarintTx(dAtA, i, uint64(size))
+			}
+			i--
+			dAtA[i] = 0xa
+		}
+	}
+	return len(dAtA) - i, nil
+}
+
+func (m *TxBodyCompat) Marshal() (dAtA []byte, err error) {
+	size := m.Size()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBuffer(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *TxBodyCompat) MarshalTo(dAtA []byte) (int, error) {
+	size := m.Size()
+	return m.MarshalToSizedBuffer(dAtA[:size])
+}
+
+func (m *TxBodyCompat) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	i := len(dAtA)
 	_ = i
 	var l int
@@ -1920,6 +2162,47 @@ func (m *SignDocDirectAux) Size() (n int) {
 }
 
 func (m *TxBody) Size() (n int) {
+	if m == nil {
+		return 0
+	}
+	var l int
+	_ = l
+	if len(m.Messages) > 0 {
+		for _, e := range m.Messages {
+			l = e.Size()
+			n += 1 + l + sovTx(uint64(l))
+		}
+	}
+	l = len(m.Memo)
+	if l > 0 {
+		n += 1 + l + sovTx(uint64(l))
+	}
+	if m.TimeoutHeight != 0 {
+		n += 1 + sovTx(uint64(m.TimeoutHeight))
+	}
+	if m.Unordered {
+		n += 2
+	}
+	if m.TimeoutTimestamp != nil {
+		l = github_com_cosmos_gogoproto_types.SizeOfStdTime(*m.TimeoutTimestamp)
+		n += 1 + l + sovTx(uint64(l))
+	}
+	if len(m.ExtensionOptions) > 0 {
+		for _, e := range m.ExtensionOptions {
+			l = e.Size()
+			n += 2 + l + sovTx(uint64(l))
+		}
+	}
+	if len(m.NonCriticalExtensionOptions) > 0 {
+		for _, e := range m.NonCriticalExtensionOptions {
+			l = e.Size()
+			n += 2 + l + sovTx(uint64(l))
+		}
+	}
+	return n
+}
+
+func (m *TxBodyCompat) Size() (n int) {
 	if m == nil {
 		return 0
 	}
@@ -2704,7 +2987,7 @@ func (m *SignDocDirectAux) Unmarshal(dAtA []byte) error {
 				return io.ErrUnexpectedEOF
 			}
 			if m.PublicKey == nil {
-				m.PublicKey = &types.Any{}
+				m.PublicKey = &any.Any{}
 			}
 			if err := m.PublicKey.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
 				return err
@@ -2895,7 +3178,266 @@ func (m *TxBody) Unmarshal(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.Messages = append(m.Messages, &types.Any{})
+			m.Messages = append(m.Messages, &any.Any{})
+			if err := m.Messages[len(m.Messages)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 2:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Memo", wireType)
+			}
+			var stringLen uint64
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowTx
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				stringLen |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return ErrInvalidLengthTx
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return ErrInvalidLengthTx
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Memo = string(dAtA[iNdEx:postIndex])
+			iNdEx = postIndex
+		case 3:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field TimeoutHeight", wireType)
+			}
+			m.TimeoutHeight = 0
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowTx
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				m.TimeoutHeight |= uint64(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+		case 4:
+			if wireType != 0 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Unordered", wireType)
+			}
+			var v int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowTx
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				v |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			m.Unordered = bool(v != 0)
+		case 5:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field TimeoutTimestamp", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowTx
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthTx
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthTx
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			if m.TimeoutTimestamp == nil {
+				m.TimeoutTimestamp = new(time.Time)
+			}
+			if err := github_com_cosmos_gogoproto_types.StdTimeUnmarshal(m.TimeoutTimestamp, dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 1023:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ExtensionOptions", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowTx
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthTx
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthTx
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.ExtensionOptions = append(m.ExtensionOptions, &any.Any{})
+			if err := m.ExtensionOptions[len(m.ExtensionOptions)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		case 2047:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field NonCriticalExtensionOptions", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowTx
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthTx
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthTx
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.NonCriticalExtensionOptions = append(m.NonCriticalExtensionOptions, &any.Any{})
+			if err := m.NonCriticalExtensionOptions[len(m.NonCriticalExtensionOptions)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
+				return err
+			}
+			iNdEx = postIndex
+		default:
+			iNdEx = preIndex
+			skippy, err := skipTx(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return ErrInvalidLengthTx
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *TxBodyCompat) Unmarshal(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflowTx
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: TxBodyCompat: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: TxBodyCompat: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field Messages", wireType)
+			}
+			var msglen int
+			for shift := uint(0); ; shift += 7 {
+				if shift >= 64 {
+					return ErrIntOverflowTx
+				}
+				if iNdEx >= l {
+					return io.ErrUnexpectedEOF
+				}
+				b := dAtA[iNdEx]
+				iNdEx++
+				msglen |= int(b&0x7F) << shift
+				if b < 0x80 {
+					break
+				}
+			}
+			if msglen < 0 {
+				return ErrInvalidLengthTx
+			}
+			postIndex := iNdEx + msglen
+			if postIndex < 0 {
+				return ErrInvalidLengthTx
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.Messages = append(m.Messages, &any.Any{})
 			if err := m.Messages[len(m.Messages)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
@@ -2980,7 +3522,7 @@ func (m *TxBody) Unmarshal(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.ExtensionOptions = append(m.ExtensionOptions, &types.Any{})
+			m.ExtensionOptions = append(m.ExtensionOptions, &any.Any{})
 			if err := m.ExtensionOptions[len(m.ExtensionOptions)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
@@ -3014,7 +3556,7 @@ func (m *TxBody) Unmarshal(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.NonCriticalExtensionOptions = append(m.NonCriticalExtensionOptions, &types.Any{})
+			m.NonCriticalExtensionOptions = append(m.NonCriticalExtensionOptions, &any.Any{})
 			if err := m.NonCriticalExtensionOptions[len(m.NonCriticalExtensionOptions)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
@@ -3255,7 +3797,7 @@ func (m *SignerInfo) Unmarshal(dAtA []byte) error {
 				return io.ErrUnexpectedEOF
 			}
 			if m.PublicKey == nil {
-				m.PublicKey = &types.Any{}
+				m.PublicKey = &any.Any{}
 			}
 			if err := m.PublicKey.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
 				return err
@@ -3585,7 +4127,7 @@ func (m *ModeInfo_Multi) Unmarshal(dAtA []byte) error {
 				return io.ErrUnexpectedEOF
 			}
 			if m.Bitarray == nil {
-				m.Bitarray = &types1.CompactBitArray{}
+				m.Bitarray = &types.CompactBitArray{}
 			}
 			if err := m.Bitarray.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
 				return err
@@ -3704,7 +4246,7 @@ func (m *Fee) Unmarshal(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.Amount = append(m.Amount, types2.Coin{})
+			m.Amount = append(m.Amount, types1.Coin{})
 			if err := m.Amount[len(m.Amount)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}
@@ -3871,7 +4413,7 @@ func (m *Tip) Unmarshal(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.Amount = append(m.Amount, types2.Coin{})
+			m.Amount = append(m.Amount, types1.Coin{})
 			if err := m.Amount[len(m.Amount)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
 				return err
 			}

@@ -3,69 +3,82 @@ package depinject_test
 import (
 	"testing"
 
-	"github.com/regen-network/gocuke"
-	"gotest.tools/v3/assert"
+	"github.com/stretchr/testify/require"
 
 	"cosmossdk.io/depinject"
 )
 
-func TestInvoke(t *testing.T) {
-	gocuke.NewRunner(t, &invokeSuite{}).
-		Path("features/invoke.feature").
-		Run()
+type InvokeSuite struct {
+	i  int
+	sp *string
 }
 
-type invokeSuite struct {
-	gocuke.TestingT
-	configs []depinject.Config
-	i       int
-	sp      *string
-}
-
-func (s *invokeSuite) AnInvokerRequestingAnIntAndStringPointer() {
-	s.configs = append(s.configs, depinject.Invoke(s.intStringPointerInvoker))
-}
-
-func (s *invokeSuite) intStringPointerInvoker(i int, sp *string) {
+func (s *InvokeSuite) IntStringPointerInvoker(i int, sp *string) {
 	s.i = i
 	s.sp = sp
 }
 
-func (s *invokeSuite) TheContainerIsBuilt() {
-	assert.NilError(s, depinject.Inject(depinject.Configs(s.configs...)))
+func ProvideLenModuleKey(key depinject.ModuleKey) int {
+	return len(key.Name())
 }
 
-func (s *invokeSuite) TheInvokerWillGetTheIntParameterSetTo(a int64) {
-	assert.Equal(s, int(a), s.i)
+func IntProvider5() int { return 5 }
+
+func StringPtrProviderFoo() *string {
+	x := "foo"
+	return &x
 }
 
-func (s *invokeSuite) TheInvokerWillGetTheStringPointerParameterSetToNil() {
-	if s.sp != nil {
-		s.Fatalf("expected a nil string pointer, got %s", *s.sp)
-	}
+func TestInvokerNoResolvableDependencies(t *testing.T) {
+	t.Parallel()
+
+	invokerSuite := &InvokeSuite{}
+	configs := depinject.Configs(
+		depinject.Supply(invokerSuite),
+		depinject.Invoke((*InvokeSuite).IntStringPointerInvoker),
+	)
+
+	err := depinject.Inject(configs)
+	require.NoError(t, err)
+
+	// invokers get called even if their dependencies can't be resolved
+	// values are still zeroed
+	require.Equal(t, 0, invokerSuite.i)
+	require.Equal(t, (*string)(nil), invokerSuite.sp)
 }
 
-func (s *invokeSuite) AnIntProviderReturning(a int64) {
-	s.configs = append(s.configs, depinject.Provide(func() int { return int(a) }))
+func TestInvokerProvidedDependencies(t *testing.T) {
+	t.Parallel()
+
+	invokerSuite := &InvokeSuite{}
+	configs := depinject.Configs(
+		depinject.Supply(invokerSuite),
+		depinject.Provide(IntProvider5, StringPtrProviderFoo),
+		depinject.Invoke((*InvokeSuite).IntStringPointerInvoker),
+	)
+
+	err := depinject.Inject(configs)
+	require.NoError(t, err)
+
+	require.Equal(t, 5, invokerSuite.i)
+	require.Equal(t, "foo", *invokerSuite.sp)
 }
 
-func (s *invokeSuite) AStringPointerProviderPointingTo(a string) {
-	s.configs = append(s.configs, depinject.Provide(func() *string { return &a }))
-}
+func TestInvokerScopedDependencies(t *testing.T) {
+	t.Parallel()
 
-func (s *invokeSuite) TheInvokerWillGetTheStringPointerParameterSetTo(a string) {
-	if s.sp == nil {
-		s.Fatalf("expected a non-nil string pointer")
-	}
-	assert.Equal(s, a, *s.sp)
-}
+	moduleName := "test"
 
-func (s *invokeSuite) AnInvokerRequestingAnIntAndStringPointerRunInModule(a string) {
-	s.configs = append(s.configs, depinject.InvokeInModule(a, s.intStringPointerInvoker))
-}
+	invokerSuite := &InvokeSuite{}
+	configs := depinject.Configs(
+		depinject.Supply(invokerSuite),
+		depinject.Provide(ProvideLenModuleKey),
+		depinject.InvokeInModule(moduleName, (*InvokeSuite).IntStringPointerInvoker),
+	)
 
-func (s *invokeSuite) AModulescopedIntProviderWhichReturnsTheLengthOfTheModuleName() {
-	s.configs = append(s.configs, depinject.Provide(func(key depinject.ModuleKey) int {
-		return len(key.Name())
-	}))
+	err := depinject.Inject(configs)
+	require.NoError(t, err)
+
+	require.Equal(t, len(moduleName), invokerSuite.i)
+	require.Equal(t, (*string)(nil), invokerSuite.sp)
 }

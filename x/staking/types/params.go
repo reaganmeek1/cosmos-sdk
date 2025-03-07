@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"cosmossdk.io/math"
-	"sigs.k8s.io/yaml"
 
 	"github.com/cosmos/cosmos-sdk/codec"
 	sdk "github.com/cosmos/cosmos-sdk/types"
@@ -20,30 +19,31 @@ const (
 	// TODO: Justify our choice of default here.
 	DefaultUnbondingTime time.Duration = time.Hour * 24 * 7 * 3
 
-	// Default maximum number of bonded validators
+	// DefaultMaxValidators is the default maximum number of bonded validators.
 	DefaultMaxValidators uint32 = 100
 
-	// Default maximum entries in a UBD/RED pair
+	// DefaultMaxEntries is the default maximum number of entries
+	// in a UBD (Unbonding Delegation) or RED (Redelegation) pair.
 	DefaultMaxEntries uint32 = 7
-
-	// DefaultHistorical entries is 10000. Apps that don't use IBC can ignore this
-	// value by not adding the staking module to the application module manager's
-	// SetOrderBeginBlockers.
-	DefaultHistoricalEntries uint32 = 10000
 )
 
 // DefaultMinCommissionRate is set to 0%
 var DefaultMinCommissionRate = math.LegacyZeroDec()
 
 // NewParams creates a new Params instance
-func NewParams(unbondingTime time.Duration, maxValidators, maxEntries, historicalEntries uint32, bondDenom string, minCommissionRate sdk.Dec) Params {
+func NewParams(unbondingTime time.Duration,
+	maxValidators, maxEntries uint32,
+	bondDenom string, minCommissionRate math.LegacyDec,
+	keyRotationFee sdk.Coin,
+) Params {
 	return Params{
 		UnbondingTime:     unbondingTime,
 		MaxValidators:     maxValidators,
 		MaxEntries:        maxEntries,
-		HistoricalEntries: historicalEntries,
+		HistoricalEntries: 0,
 		BondDenom:         bondDenom,
 		MinCommissionRate: minCommissionRate,
+		KeyRotationFee:    keyRotationFee,
 	}
 }
 
@@ -53,19 +53,13 @@ func DefaultParams() Params {
 		DefaultUnbondingTime,
 		DefaultMaxValidators,
 		DefaultMaxEntries,
-		DefaultHistoricalEntries,
 		sdk.DefaultBondDenom,
 		DefaultMinCommissionRate,
+		sdk.NewInt64Coin(sdk.DefaultBondDenom, 1000000), // fees used to rotate the ConsPubkey or Operator key
 	)
 }
 
-// String returns a human readable string representation of the parameters.
-func (p Params) String() string {
-	out, _ := yaml.Marshal(p)
-	return string(out)
-}
-
-// unmarshal the current staking params value from store key or panic
+// MustUnmarshalParams unmarshal the current staking params value from store key or panic
 func MustUnmarshalParams(cdc *codec.LegacyAmino, value []byte) Params {
 	params, err := UnmarshalParams(cdc, value)
 	if err != nil {
@@ -75,7 +69,7 @@ func MustUnmarshalParams(cdc *codec.LegacyAmino, value []byte) Params {
 	return params
 }
 
-// unmarshal the current staking params value from store key
+// UnmarshalParams unmarshal the current staking params value from store key
 func UnmarshalParams(cdc *codec.LegacyAmino, value []byte) (params Params, err error) {
 	err = cdc.Unmarshal(value, &params)
 	if err != nil {
@@ -85,7 +79,7 @@ func UnmarshalParams(cdc *codec.LegacyAmino, value []byte) (params Params, err e
 	return
 }
 
-// validate a set of params
+// Validate validates a set of params
 func (p Params) Validate() error {
 	if err := validateUnbondingTime(p.UnbondingTime); err != nil {
 		return err
@@ -107,6 +101,14 @@ func (p Params) Validate() error {
 		return err
 	}
 
+	if err := validateHistoricalEntries(p.HistoricalEntries); err != nil {
+		return err
+	}
+
+	if err := validateKeyRotationFee(p.BondDenom, p.KeyRotationFee); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -116,8 +118,8 @@ func validateUnbondingTime(i interface{}) error {
 		return fmt.Errorf("invalid parameter type: %T", i)
 	}
 
-	if v <= 0 {
-		return fmt.Errorf("unbonding time must be positive: %d", v)
+	if v < 0 {
+		return fmt.Errorf("unbonding time must not be negative: %d", v)
 	}
 
 	return nil
@@ -175,30 +177,46 @@ func validateBondDenom(i interface{}) error {
 	return nil
 }
 
+// ValidatePowerReduction validates the PowerReduction parameter.
 func ValidatePowerReduction(i interface{}) error {
 	v, ok := i.(math.Int)
 	if !ok {
 		return fmt.Errorf("invalid parameter type: %T", i)
 	}
 
-	if v.LT(sdk.NewInt(1)) {
-		return fmt.Errorf("power reduction cannot be lower than 1")
+	if v.LT(math.NewInt(1)) {
+		return errors.New("power reduction cannot be lower than 1")
 	}
 
 	return nil
 }
 
 func validateMinCommissionRate(i interface{}) error {
-	v, ok := i.(sdk.Dec)
+	v, ok := i.(math.LegacyDec)
 	if !ok {
 		return fmt.Errorf("invalid parameter type: %T", i)
 	}
 
+	if v.IsNil() {
+		return fmt.Errorf("minimum commission rate cannot be nil: %s", v)
+	}
 	if v.IsNegative() {
 		return fmt.Errorf("minimum commission rate cannot be negative: %s", v)
 	}
 	if v.GT(math.LegacyOneDec()) {
 		return fmt.Errorf("minimum commission rate cannot be greater than 100%%: %s", v)
+	}
+
+	return nil
+}
+
+func validateKeyRotationFee(bondDenom string, coin sdk.Coin) error {
+	if coin.IsNil() {
+		return fmt.Errorf("cons pubkey rotation fee cannot be nil: %s", coin)
+	}
+
+	if coin.IsLTE(sdk.NewInt64Coin(bondDenom, 0)) {
+		return fmt.Errorf("cons pubkey rotation fee cannot be negative or zero: %s", coin)
 	}
 
 	return nil

@@ -1698,7 +1698,7 @@ type PackageReference struct {
 	//
 	// When a new version of a module is released and items are added to existing
 	// .proto files, these definitions should contain comments of the form
-	// "Since Revision N" where N is an integer revision.
+	// "Since: Revision N" where N is an integer revision.
 	//
 	// When the module runtime starts up, it will check the pinned proto
 	// image and panic if there are runtime protobuf definitions that are not
@@ -1715,10 +1715,10 @@ type PackageReference struct {
 	// with pinned file descriptors to make sure there are no incompatible changes.
 	//
 	// This behavior ensures that:
-	// * pinned proto images are up-to-date
-	// * protobuf files are carefully annotated with revision comments which
-	//   are important good client UX
-	// * protobuf files are changed in backwards and forwards compatible ways
+	//   - pinned proto images are up-to-date
+	//   - protobuf files are carefully annotated with revision comments which
+	//     are important good client UX
+	//   - protobuf files are changed in backwards and forwards compatible ways
 	Revision uint32 `protobuf:"varint,2,opt,name=revision,proto3" json:"revision,omitempty"`
 }
 

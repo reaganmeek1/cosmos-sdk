@@ -5,6 +5,7 @@
 * 2021-05-01: Initial Draft
 * 2021-07-02: Review updates
 * 2022-06-15: Add batch operation
+* 2022-11-11: Remove strict validation of classID and tokenID
 
 ## Status
 
@@ -16,9 +17,9 @@ This ADR defines the `x/nft` module which is a generic implementation of NFTs, r
 
 * `MsgNewClass` - Receive the user's request to create a class, and call the `NewClass` of the `x/nft` module.
 * `MsgUpdateClass` - Receive the user's request to update a class, and call the `UpdateClass` of the `x/nft` module.
-* `MsgMintNFT` - Receive the user's request to mint a nft, and call the `MintNFT` of the `x/nft` module.
-* `BurnNFT` - Receive the user's request to burn a nft, and call the `BurnNFT` of the `x/nft` module.
-* `UpdateNFT` - Receive the user's request to update a nft, and call the `UpdateNFT` of the `x/nft` module.
+* `MsgMintNFT` - Receive the user's request to mint an NFT, and call the `MintNFT` of the `x/nft` module.
+* `BurnNFT` - Receive the user's request to burn an NFT, and call the `BurnNFT` of the `x/nft` module.
+* `UpdateNFT` - Receive the user's request to update an NFT, and call the `UpdateNFT` of the `x/nft` module.
 
 ## Context
 
@@ -47,7 +48,7 @@ We create a `x/nft` module, which contains the following functionality:
 * Expose external `Message` interface for users to transfer ownership of their NFTs.
 * Query NFTs and their supply information.
 
-The proposed module is a base module for NFT app logic. It's goal it to provide a common layer for storage, basic transfer functionality and IBC. The module should not be used as a standalone.
+The proposed module is a base module for NFT app logic. Its goal is to provide a common layer for storage, basic transfer functionality and IBC. The module should not be used as a standalone.
 Instead an app should create a specialized module to handle app specific logic (eg: NFT ID construction, royalty), user level minting and burning. Moreover an app specialized module should handle auxiliary data to support the app logic (eg indexes, ORM, business data).
 
 All data carried over IBC must be part of the `NFT` or `Class` type described below. The app specific NFT data should be encoded in `NFT.data` for cross-chain integrity. Other objects related to NFT, which are not important for integrity can be part of the app specific module.
@@ -57,7 +58,7 @@ All data carried over IBC must be part of the `NFT` or `Class` type described be
 We propose two main types:
 
 * `Class` -- describes NFT class. We can think about it as a smart contract address.
-* `NFT` -- object representing unique, non fungible asset. Each NFT is associated with a Class.
+* `NFT` -- object representing unique, non-fungible asset. Each NFT is associated with a class.
 
 #### Class
 
@@ -75,12 +76,12 @@ message Class {
 }
 ```
 
-* `id` is an alphanumeric identifier of the NFT class; it is used as the primary index for storing the class; _required_
+* `id` is used as the primary index for storing the class; _required_
 * `name` is a descriptive name of the NFT class; _optional_
 * `symbol` is the symbol usually shown on exchanges for the NFT class; _optional_
 * `description` is a detailed description of the NFT class; _optional_
 * `uri` is a URI for the class metadata stored off chain. It should be a JSON file that contains metadata about the NFT class and NFT data schema ([OpenSea example](https://docs.opensea.io/docs/contract-level-metadata)); _optional_
-* `uri_hash` is a hash of the document pointed by uri; _optional_
+* `uri_hash` is a hash of the document pointed by URI; _optional_
 * `data` is app specific metadata of the class; _optional_
 
 #### NFT
@@ -97,8 +98,8 @@ message NFT {
 }
 ```
 
-* `class_id` is the identifier of the NFT class where the NFT belongs; _required_,`[a-zA-Z][a-zA-Z0-9/:-]{2,100}`
-* `id` is an alphanumeric identifier of the NFT, unique within the scope of its class. It is specified by the creator of the NFT and may be expanded to use DID in the future. `class_id` combined with `id` uniquely identifies an NFT and is used as the primary index for storing the NFT; _required_,`[a-zA-Z][a-zA-Z0-9/:-]{2,100}`
+* `class_id` is the identifier of the NFT class where the NFT belongs; _required_
+* `id` is an identifier of the NFT, unique within the scope of its class. It is specified by the creator of the NFT and may be expanded to use DID in the future. `class_id` combined with `id` uniquely identifies an NFT and is used as the primary index for storing the NFT; _required_
 
   ```text
   {class_id}/{id} --> NFT (bytes)
@@ -106,7 +107,7 @@ message NFT {
 
 * `uri` is a URI for the NFT metadata stored off chain. Should point to a JSON file that contains metadata about this NFT (Ref: [ERC721 standard and OpenSea extension](https://docs.opensea.io/docs/metadata-standards)); _required_
 * `uri_hash` is a hash of the document pointed by uri; _optional_
-* `data` is an app specific data of the NFT. CAN be used by composing modules to specify additional properties of the NFT; _optional_
+* `data` is an app specific data of the NFT. Can be used by composing modules to specify additional properties of the NFT; _optional_
 
 This ADR doesn't specify values that `data` can take; however, best practices recommend upper-level NFT modules clearly specify their contents.  Although the value of this field doesn't provide the additional context required to manage NFT records, which means that the field can technically be removed from the specification, the field's existence allows basic informational/UI functionality.
 
@@ -155,7 +156,7 @@ message MsgSend {
   string class_id = 1;
   string id       = 2;
   string sender   = 3;
-  string reveiver = 4;
+  string receiver = 4;
 }
 message MsgSendResponse {}
 ```
@@ -182,7 +183,7 @@ func (m msgServer) Send(ctx context.Context, msg *types.MsgSend) (*types.MsgSend
 
 The query service methods for the `x/nft` module are:
 
-```proto
+```protobuf
 service Query {
   // Balance queries the number of NFTs of a given class owned by the owner, same as balanceOf in ERC721
   rpc Balance(QueryBalanceRequest) returns (QueryBalanceResponse) {
@@ -252,7 +253,7 @@ message QuerySupplyResponse {
   uint64 amount = 1;
 }
 
-// QueryNFTstRequest is the request type for the Query/NFTs RPC method
+// QueryNFTsRequest is the request type for the Query/NFTs RPC method
 message QueryNFTsRequest {
   string                                class_id   = 1;
   string                                owner      = 2;

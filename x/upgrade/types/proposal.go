@@ -1,67 +1,36 @@
 package types
 
 import (
-	"fmt"
-
-	gov "github.com/cosmos/cosmos-sdk/x/gov/types/v1beta1"
+	"cosmossdk.io/x/gov/types"
+	"cosmossdk.io/x/gov/types/v1beta1"
 )
 
-const (
-	ProposalTypeSoftwareUpgrade       string = "SoftwareUpgrade"
-	ProposalTypeCancelSoftwareUpgrade string = "CancelSoftwareUpgrade"
-)
+// GetTitle returns the proposal title
+func (sp *SoftwareUpgradeProposal) GetTitle() string { return sp.Title }
 
-func NewSoftwareUpgradeProposal(title, description string, plan Plan) gov.Content {
-	return &SoftwareUpgradeProposal{title, description, plan}
-}
+// GetDescription returns the proposal description
+func (sp *SoftwareUpgradeProposal) GetDescription() string { return sp.Description }
 
-// Implements Proposal Interface
-var _ gov.Content = &SoftwareUpgradeProposal{}
+// ProposalRoute returns the proposal router key
+func (sp *SoftwareUpgradeProposal) ProposalRoute() string { return types.RouterKey }
 
-func init() {
-	gov.RegisterProposalType(ProposalTypeSoftwareUpgrade)
-	gov.RegisterProposalType(ProposalTypeCancelSoftwareUpgrade)
-}
+// ProposalType is "Text"
+func (sp *SoftwareUpgradeProposal) ProposalType() string { return v1beta1.ProposalTypeText }
 
-func (sup *SoftwareUpgradeProposal) GetTitle() string       { return sup.Title }
-func (sup *SoftwareUpgradeProposal) GetDescription() string { return sup.Description }
-func (sup *SoftwareUpgradeProposal) ProposalRoute() string  { return RouterKey }
-func (sup *SoftwareUpgradeProposal) ProposalType() string   { return ProposalTypeSoftwareUpgrade }
-func (sup *SoftwareUpgradeProposal) ValidateBasic() error {
-	if err := sup.Plan.ValidateBasic(); err != nil {
-		return err
-	}
-	return gov.ValidateAbstract(sup)
-}
+// ValidateBasic validates the content's title and description of the proposal
+func (sp *SoftwareUpgradeProposal) ValidateBasic() error { return v1beta1.ValidateAbstract(sp) }
 
-func (sup SoftwareUpgradeProposal) String() string {
-	return fmt.Sprintf(`Software Upgrade Proposal:
-  Title:       %s
-  Description: %s
-`, sup.Title, sup.Description)
-}
+// GetTitle returns the proposal title
+func (cp *CancelSoftwareUpgradeProposal) GetTitle() string { return cp.Title }
 
-func NewCancelSoftwareUpgradeProposal(title, description string) gov.Content {
-	return &CancelSoftwareUpgradeProposal{title, description}
-}
+// GetDescription returns the proposal description
+func (cp *CancelSoftwareUpgradeProposal) GetDescription() string { return cp.Description }
 
-// Implements Proposal Interface
-var _ gov.Content = &CancelSoftwareUpgradeProposal{}
+// ProposalRoute returns the proposal router key
+func (cp *CancelSoftwareUpgradeProposal) ProposalRoute() string { return types.RouterKey }
 
-func (csup *CancelSoftwareUpgradeProposal) GetTitle() string       { return csup.Title }
-func (csup *CancelSoftwareUpgradeProposal) GetDescription() string { return csup.Description }
-func (csup *CancelSoftwareUpgradeProposal) ProposalRoute() string  { return RouterKey }
-func (csup *CancelSoftwareUpgradeProposal) ProposalType() string {
-	return ProposalTypeCancelSoftwareUpgrade
-}
+// ProposalType is "Text"
+func (cp *CancelSoftwareUpgradeProposal) ProposalType() string { return v1beta1.ProposalTypeText }
 
-func (csup *CancelSoftwareUpgradeProposal) ValidateBasic() error {
-	return gov.ValidateAbstract(csup)
-}
-
-func (csup CancelSoftwareUpgradeProposal) String() string {
-	return fmt.Sprintf(`Cancel Software Upgrade Proposal:
-  Title:       %s
-  Description: %s
-`, csup.Title, csup.Description)
-}
+// ValidateBasic validates the content's title and description of the proposal
+func (cp *CancelSoftwareUpgradeProposal) ValidateBasic() error { return v1beta1.ValidateAbstract(cp) }

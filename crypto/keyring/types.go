@@ -6,7 +6,7 @@ import (
 )
 
 // Language is a language to create the BIP 39 mnemonic in.
-// Currently, only english is supported though.
+// Currently, only English is supported though.
 // Find a list of all supported languages in the BIP 39 spec (word lists).
 type Language int
 
@@ -65,7 +65,7 @@ func (kt KeyType) String() string {
 
 type (
 	// DeriveKeyFunc defines the function to derive a new key from a seed and hd path
-	DeriveKeyFunc func(mnemonic string, bip39Passphrase, hdPath string, algo hd.PubKeyType) ([]byte, error)
+	DeriveKeyFunc func(mnemonic, bip39Passphrase, hdPath string, algo hd.PubKeyType) ([]byte, error)
 	// PrivKeyGenFunc defines the function to convert derived key bytes to a tendermint private key
 	PrivKeyGenFunc func(bz []byte, algo hd.PubKeyType) (cryptotypes.PrivKey, error)
 )

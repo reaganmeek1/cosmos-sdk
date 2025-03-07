@@ -3,14 +3,12 @@ package depinject
 import (
 	"fmt"
 	"reflect"
-
-	"github.com/pkg/errors"
 )
 
 // In can be embedded in another struct to inform the container that the
 // fields of the struct should be treated as dependency inputs.
 // This allows a struct to be used to specify dependencies rather than
-// positional parameters.
+// positional parameters.  Unexpected fields will be ignored.
 //
 // Fields of the struct may support the following tags:
 //
@@ -37,15 +35,15 @@ type isOut interface{ isOut() }
 
 var isOutType = reflect.TypeOf((*isOut)(nil)).Elem()
 
-func expandStructArgsProvider(provider ProviderDescriptor) (ProviderDescriptor, error) {
+func expandStructArgsProvider(provider providerDescriptor) (providerDescriptor, error) {
 	var structArgsInInput bool
-	var newIn []ProviderInput
+	var newIn []providerInput
 	for _, in := range provider.Inputs {
 		if in.Type.AssignableTo(isInType) {
 			structArgsInInput = true
 			inTypes, err := structArgsInTypes(in.Type)
 			if err != nil {
-				return ProviderDescriptor{}, err
+				return providerDescriptor{}, err
 			}
 			newIn = append(newIn, inTypes...)
 		} else {
@@ -56,7 +54,7 @@ func expandStructArgsProvider(provider ProviderDescriptor) (ProviderDescriptor, 
 	newOut, structArgsInOutput := expandStructArgsOutTypes(provider.Outputs)
 
 	if structArgsInInput || structArgsInOutput {
-		return ProviderDescriptor{
+		return providerDescriptor{
 			Inputs:   newIn,
 			Outputs:  newOut,
 			Fn:       expandStructArgsFn(provider),
@@ -67,7 +65,7 @@ func expandStructArgsProvider(provider ProviderDescriptor) (ProviderDescriptor, 
 	return provider, nil
 }
 
-func expandStructArgsFn(provider ProviderDescriptor) func(inputs []reflect.Value) ([]reflect.Value, error) {
+func expandStructArgsFn(provider providerDescriptor) func(inputs []reflect.Value) ([]reflect.Value, error) {
 	fn := provider.Fn
 	inParams := provider.Inputs
 	outParams := provider.Outputs
@@ -106,9 +104,9 @@ func expandStructArgsFn(provider ProviderDescriptor) func(inputs []reflect.Value
 	}
 }
 
-func structArgsInTypes(typ reflect.Type) ([]ProviderInput, error) {
+func structArgsInTypes(typ reflect.Type) ([]providerInput, error) {
 	n := typ.NumField()
-	var res []ProviderInput
+	var res []providerInput
 	for i := 0; i < n; i++ {
 		f := typ.Field(i)
 		if f.Type.AssignableTo(isInType) {
@@ -121,21 +119,22 @@ func structArgsInTypes(typ reflect.Type) ([]ProviderInput, error) {
 			if optTag == "true" {
 				optional = true
 			} else {
-				return nil, errors.Errorf("bad optional tag %q (should be \"true\") in %v", optTag, typ)
+				return nil, fmt.Errorf("bad optional tag %q (should be \"true\") in %v", optTag, typ)
 			}
 		}
 
-		res = append(res, ProviderInput{
+		res = append(res, providerInput{
 			Type:     f.Type,
 			Optional: optional,
+			Ignored:  !f.IsExported(),
 		})
 	}
 	return res, nil
 }
 
-func expandStructArgsOutTypes(outputs []ProviderOutput) ([]ProviderOutput, bool) {
+func expandStructArgsOutTypes(outputs []providerOutput) ([]providerOutput, bool) {
 	foundStructArgs := false
-	var newOut []ProviderOutput
+	var newOut []providerOutput
 	for _, out := range outputs {
 		if out.Type.AssignableTo(isOutType) {
 			foundStructArgs = true
@@ -147,16 +146,16 @@ func expandStructArgsOutTypes(outputs []ProviderOutput) ([]ProviderOutput, bool)
 	return newOut, foundStructArgs
 }
 
-func structArgsOutTypes(typ reflect.Type) []ProviderOutput {
+func structArgsOutTypes(typ reflect.Type) []providerOutput {
 	n := typ.NumField()
-	var res []ProviderOutput
+	var res []providerOutput
 	for i := 0; i < n; i++ {
 		f := typ.Field(i)
 		if f.Type.AssignableTo(isOutType) {
 			continue
 		}
 
-		res = append(res, ProviderOutput{
+		res = append(res, providerOutput{
 			Type: f.Type,
 		})
 	}
@@ -168,12 +167,14 @@ func buildIn(typ reflect.Type, values []reflect.Value) (reflect.Value, int, erro
 	j := 0
 	res := reflect.New(typ)
 	for i := 0; i < numFields; i++ {
+		if !res.Elem().Field(i).CanSet() {
+			// private field, skip
+			j++
+			continue
+		}
 		f := typ.Field(i)
 		if f.Type.AssignableTo(isInType) {
 			continue
-		}
-		if !res.Elem().Field(i).CanSet() {
-			return reflect.Value{}, 0, fmt.Errorf("depinject.In struct %s on package %s can't have unexported field", res.Elem().String(), f.PkgPath)
 		}
 		if !values[j].CanInterface() {
 			return reflect.Value{}, 0, fmt.Errorf("depinject.Out struct %s on package %s can't have unexported field", res.Elem().String(), f.PkgPath)

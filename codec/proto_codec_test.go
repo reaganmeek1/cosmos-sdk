@@ -1,17 +1,27 @@
 package codec_test
 
 import (
-	"errors"
-	"fmt"
+	"math"
 	"reflect"
 	"testing"
 
-	"github.com/gogo/protobuf/proto"
+	"github.com/cosmos/gogoproto/proto"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/encoding"
+	"google.golang.org/grpc/status"
+	protov2 "google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoregistry"
+
+	counterv1 "cosmossdk.io/api/cosmos/counter/v1"
+	"cosmossdk.io/x/tx/signing"
 
 	"github.com/cosmos/cosmos-sdk/codec"
+	codectestutil "github.com/cosmos/cosmos-sdk/codec/testutil"
 	"github.com/cosmos/cosmos-sdk/codec/types"
 	"github.com/cosmos/cosmos-sdk/testutil/testdata"
+	countertypes "github.com/cosmos/cosmos-sdk/testutil/x/counter/types"
+	sdk "github.com/cosmos/cosmos-sdk/types"
 )
 
 func createTestInterfaceRegistry() types.InterfaceRegistry {
@@ -36,15 +46,6 @@ func TestProtoMarsharlInterface(t *testing.T) {
 func TestProtoCodec(t *testing.T) {
 	cdc := codec.NewProtoCodec(createTestInterfaceRegistry())
 	testMarshaling(t, cdc)
-}
-
-type lyingProtoMarshaler struct {
-	codec.ProtoMarshaler
-	falseSize int
-}
-
-func (lpm *lyingProtoMarshaler) Size() int {
-	return lpm.falseSize
 }
 
 func TestEnsureRegistered(t *testing.T) {
@@ -98,7 +99,7 @@ func TestProtoCodecMarshal(t *testing.T) {
 	err = cdc.UnmarshalInterface(bz, &animal)
 	require.NoError(t, err)
 
-	bz, err = cdc.MarshalInterface(bird)
+	_, err = cdc.MarshalInterface(bird)
 	require.ErrorContains(t, err, "does not have a registered interface")
 
 	bz, err = cartoonCdc.MarshalInterface(bird)
@@ -109,50 +110,28 @@ func TestProtoCodecMarshal(t *testing.T) {
 
 	err = cartoonCdc.UnmarshalInterface(bz, &cartoon)
 	require.NoError(t, err)
+
+	// test typed nil input shouldn't panic
+	var v *countertypes.QueryGetCountRequest
+	bz, err = grpcServerEncode(cartoonCdc.GRPCCodec(), v)
+	require.NoError(t, err)
+	require.Empty(t, bz)
 }
 
-func TestProtoCodecUnmarshalLengthPrefixedChecks(t *testing.T) {
-	cdc := codec.NewProtoCodec(createTestInterfaceRegistry())
-
-	truth := &testdata.Cat{Lives: 9, Moniker: "glowing"}
-	realSize := len(cdc.MustMarshal(truth))
-
-	falseSizes := []int{
-		100,
-		5,
+// Emulate grpc server implementation
+// https://github.com/grpc/grpc-go/blob/b1d7f56b81b7902d871111b82dec6ba45f854ede/rpc_util.go#L590
+func grpcServerEncode(c encoding.Codec, msg interface{}) ([]byte, error) {
+	if msg == nil { // NOTE: typed nils will not be caught by this check
+		return nil, nil
 	}
-
-	for _, falseSize := range falseSizes {
-		falseSize := falseSize
-
-		t.Run(fmt.Sprintf("ByMarshaling falseSize=%d", falseSize), func(t *testing.T) {
-			lpm := &lyingProtoMarshaler{
-				ProtoMarshaler: &testdata.Cat{Lives: 9, Moniker: "glowing"},
-				falseSize:      falseSize,
-			}
-			var serialized []byte
-			require.NotPanics(t, func() { serialized = cdc.MustMarshalLengthPrefixed(lpm) })
-
-			recv := new(testdata.Cat)
-			gotErr := cdc.UnmarshalLengthPrefixed(serialized, recv)
-			var wantErr error
-			if falseSize > realSize {
-				wantErr = fmt.Errorf("not enough bytes to read; want: %d, got: %d", falseSize, realSize)
-			} else {
-				wantErr = fmt.Errorf("too many bytes to read; want: %d, got: %d", falseSize, realSize)
-			}
-			require.Equal(t, gotErr, wantErr)
-		})
+	b, err := c.Marshal(msg)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "grpc: error while marshaling: %v", err.Error())
 	}
-
-	t.Run("Crafted bad uvarint size", func(t *testing.T) {
-		crafted := []byte{0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f}
-		recv := new(testdata.Cat)
-		gotErr := cdc.UnmarshalLengthPrefixed(crafted, recv)
-		require.Equal(t, gotErr, errors.New("invalid number of bytes read from length-prefixed encoding: -10"))
-
-		require.Panics(t, func() { cdc.MustUnmarshalLengthPrefixed(crafted, recv) })
-	})
+	if uint(len(b)) > math.MaxUint32 {
+		return nil, status.Errorf(codes.ResourceExhausted, "grpc: message too large (%d bytes)", len(b))
+	}
+	return b, nil
 }
 
 func mustAny(msg proto.Message) *types.Any {
@@ -195,4 +174,39 @@ func BenchmarkProtoCodecMarshalLengthPrefixed(b *testing.B) {
 		}
 		b.SetBytes(int64(len(blob)))
 	}
+}
+
+func TestGetSigners(t *testing.T) {
+	cdcOpts := codectestutil.CodecOptions{}
+	interfaceRegistry, err := types.NewInterfaceRegistryWithOptions(types.InterfaceRegistryOptions{
+		SigningOptions: signing.Options{
+			AddressCodec:          cdcOpts.GetAddressCodec(),
+			ValidatorAddressCodec: cdcOpts.GetValidatorCodec(),
+		},
+		ProtoFiles: protoregistry.GlobalFiles,
+	})
+	require.NoError(t, err)
+	cdc := codec.NewProtoCodec(interfaceRegistry)
+	testAddr := sdk.AccAddress("test")
+	testAddrStr, err := cdcOpts.GetAddressCodec().BytesToString(testAddr)
+	require.NoError(t, err)
+
+	msgSendV1 := &countertypes.MsgIncreaseCounter{Signer: testAddrStr, Count: 1}
+	msgSendV2 := &counterv1.MsgIncreaseCounter{Signer: testAddrStr, Count: 1}
+
+	signers, msgSendV2Copy, err := cdc.GetMsgSigners(msgSendV1)
+	require.NoError(t, err)
+	require.Equal(t, [][]byte{testAddr}, signers)
+	require.True(t, protov2.Equal(msgSendV2, msgSendV2Copy.Interface()))
+
+	signers, err = cdc.GetReflectMsgSigners(msgSendV2.ProtoReflect())
+	require.NoError(t, err)
+	require.Equal(t, [][]byte{testAddr}, signers)
+
+	msgSendAny, err := types.NewAnyWithValue(msgSendV1)
+	require.NoError(t, err)
+	signers, msgSendV2Copy, err = cdc.GetMsgAnySigners(msgSendAny)
+	require.NoError(t, err)
+	require.Equal(t, [][]byte{testAddr}, signers)
+	require.True(t, protov2.Equal(msgSendV2, msgSendV2Copy.Interface()))
 }

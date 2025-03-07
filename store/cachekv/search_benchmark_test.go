@@ -1,9 +1,10 @@
 package cachekv
 
 import (
-	db "github.com/tendermint/tm-db"
 	"strconv"
 	"testing"
+
+	"cosmossdk.io/store/cachekv/internal"
 )
 
 func BenchmarkLargeUnsortedMisses(b *testing.B) {
@@ -38,6 +39,6 @@ func generateStore() *Store {
 	return &Store{
 		cache:         cache,
 		unsortedCache: unsorted,
-		sortedCache:   db.NewMemDB(),
+		sortedCache:   internal.NewBTree(),
 	}
 }

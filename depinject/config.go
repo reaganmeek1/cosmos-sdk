@@ -1,9 +1,10 @@
 package depinject
 
 import (
+	"errors"
+	"fmt"
 	"reflect"
-
-	"github.com/pkg/errors"
+	"runtime"
 )
 
 // Config is a functional configuration of a container.
@@ -14,7 +15,10 @@ type Config interface {
 // Provide defines a container configuration which registers the provided dependency
 // injection providers. Each provider will be called at most once with the
 // exception of module-scoped providers which are called at most once per module
-// (see ModuleKey).
+// (see ModuleKey). All provider functions must be declared, exported functions not
+// internal packages and all of their input and output types must also be declared
+// and exported and not in internal packages. Note that generic type parameters
+// will not be checked, but they should also be exported so that codegen is possible.
 func Provide(providers ...interface{}) Config {
 	return containerConfig(func(ctr *container) error {
 		return provide(ctr, nil, providers)
@@ -23,26 +27,29 @@ func Provide(providers ...interface{}) Config {
 
 // ProvideInModule defines container configuration which registers the provided dependency
 // injection providers that are to be run in the named module. Each provider
-// will be called at most once.
+// will be called at most once. All provider functions must be declared, exported functions not
+// internal packages and all of their input and output types must also be declared
+// and exported and not in internal packages. Note that generic type parameters
+// will not be checked, but they should also be exported so that codegen is possible.
 func ProvideInModule(moduleName string, providers ...interface{}) Config {
 	return containerConfig(func(ctr *container) error {
 		if moduleName == "" {
-			return errors.Errorf("expected non-empty module name")
+			return errors.New("expected non-empty module name")
 		}
 
-		return provide(ctr, ctr.createOrGetModuleKey(moduleName), providers)
+		return provide(ctr, ctr.moduleKeyContext.createOrGetModuleKey(moduleName), providers)
 	})
 }
 
 func provide(ctr *container, key *moduleKey, providers []interface{}) error {
 	for _, c := range providers {
-		rc, err := ExtractProviderDescriptor(c)
+		rc, err := extractProviderDescriptor(c)
 		if err != nil {
-			return errors.WithStack(err)
+			return fmt.Errorf("%w\n%s", err, getStackTrace())
 		}
 		_, err = ctr.addNode(&rc, key)
 		if err != nil {
-			return errors.WithStack(err)
+			return fmt.Errorf("%w\n%s", err, getStackTrace())
 		}
 	}
 	return nil
@@ -52,6 +59,10 @@ func provide(ctr *container, key *moduleKey, providers []interface{}) error {
 // at the end of dependency graph configuration in the order in which it was defined. Invokers may not define output
 // parameters, although they may return an error, and all of their input parameters will be marked as optional so that
 // invokers impose no additional constraints on the dependency graph. Invoker functions should nil-check all inputs.
+// All invoker functions must be declared, exported functions not
+// internal packages and all of their input and output types must also be declared
+// and exported and not in internal packages. Note that generic type parameters
+// will not be checked, but they should also be exported so that codegen is possible.
 func Invoke(invokers ...interface{}) Config {
 	return containerConfig(func(ctr *container) error {
 		return invoke(ctr, nil, invokers)
@@ -63,21 +74,25 @@ func Invoke(invokers ...interface{}) Config {
 // at the end of dependency graph configuration in the order in which it was defined. Invokers may not define output
 // parameters, although they may return an error, and all of their input parameters will be marked as optional so that
 // invokers impose no additional constraints on the dependency graph. Invoker functions should nil-check all inputs.
+// All invoker functions must be declared, exported functions not
+// internal packages and all of their input and output types must also be declared
+// and exported and not in internal packages. Note that generic type parameters
+// will not be checked, but they should also be exported so that codegen is possible.
 func InvokeInModule(moduleName string, invokers ...interface{}) Config {
 	return containerConfig(func(ctr *container) error {
 		if moduleName == "" {
-			return errors.Errorf("expected non-empty module name")
+			return errors.New("expected non-empty module name")
 		}
 
-		return invoke(ctr, ctr.createOrGetModuleKey(moduleName), invokers)
+		return invoke(ctr, ctr.moduleKeyContext.createOrGetModuleKey(moduleName), invokers)
 	})
 }
 
 func invoke(ctr *container, key *moduleKey, invokers []interface{}) error {
 	for _, c := range invokers {
-		rc, err := ExtractInvokerDescriptor(c)
+		rc, err := extractInvokerDescriptor(c)
 		if err != nil {
-			return errors.WithStack(err)
+			return fmt.Errorf("%w\n%s", err, getStackTrace())
 		}
 		err = ctr.addInvoker(&rc, key)
 		if err != nil {
@@ -95,7 +110,7 @@ func invoke(ctr *container, key *moduleKey, invokers []interface{}) error {
 //
 //	"cosmossdk.io/depinject_test/depinject_test.Duck",
 //	"cosmossdk.io/depinject_test/depinject_test.Canvasback")
-func BindInterface(inTypeName string, outTypeName string) Config {
+func BindInterface(inTypeName, outTypeName string) Config {
 	return containerConfig(func(ctr *container) error {
 		return bindInterface(ctr, inTypeName, outTypeName, "")
 	})
@@ -111,13 +126,13 @@ func BindInterface(inTypeName string, outTypeName string) Config {
 //	 "moduleFoo",
 //		"cosmossdk.io/depinject_test/depinject_test.Duck",
 //		"cosmossdk.io/depinject_test/depinject_test.Canvasback")
-func BindInterfaceInModule(moduleName string, inTypeName string, outTypeName string) Config {
+func BindInterfaceInModule(moduleName, inTypeName, outTypeName string) Config {
 	return containerConfig(func(ctr *container) error {
 		return bindInterface(ctr, inTypeName, outTypeName, moduleName)
 	})
 }
 
-func bindInterface(ctr *container, inTypeName string, outTypeName string, moduleName string) error {
+func bindInterface(ctr *container, inTypeName, outTypeName, moduleName string) error {
 	var mk *moduleKey
 	if moduleName != "" {
 		mk = &moduleKey{name: moduleName}
@@ -137,7 +152,7 @@ func Supply(values ...interface{}) Config {
 		for _, v := range values {
 			err := ctr.supply(reflect.ValueOf(v), loc)
 			if err != nil {
-				return errors.WithStack(err)
+				return fmt.Errorf("%w\n%s", err, getStackTrace())
 			}
 		}
 		return nil
@@ -148,7 +163,7 @@ func Supply(values ...interface{}) Config {
 // fail immediately.
 func Error(err error) Config {
 	return containerConfig(func(*container) error {
-		return errors.WithStack(err)
+		return fmt.Errorf("%w\n%s", err, getStackTrace())
 	})
 }
 
@@ -158,7 +173,7 @@ func Configs(opts ...Config) Config {
 		for _, opt := range opts {
 			err := opt.apply(ctr)
 			if err != nil {
-				return errors.WithStack(err)
+				return fmt.Errorf("%w\n%s", err, getStackTrace())
 			}
 		}
 		return nil
@@ -172,3 +187,9 @@ func (c containerConfig) apply(ctr *container) error {
 }
 
 var _ Config = (*containerConfig)(nil)
+
+func getStackTrace() string {
+	var stack [4096]byte
+	n := runtime.Stack(stack[:], false)
+	return string(stack[:n])
+}

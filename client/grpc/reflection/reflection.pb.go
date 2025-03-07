@@ -6,8 +6,8 @@ package reflection
 import (
 	context "context"
 	fmt "fmt"
-	grpc1 "github.com/gogo/protobuf/grpc"
-	proto "github.com/gogo/protobuf/proto"
+	grpc1 "github.com/cosmos/gogoproto/grpc"
+	proto "github.com/cosmos/gogoproto/proto"
 	_ "google.golang.org/genproto/googleapis/api/annotations"
 	grpc "google.golang.org/grpc"
 	codes "google.golang.org/grpc/codes"
@@ -114,7 +114,7 @@ func (m *ListAllInterfacesResponse) GetInterfaceNames() []string {
 // ListImplementationsRequest is the request type of the ListImplementations
 // RPC.
 type ListImplementationsRequest struct {
-	// interface_name defines the interface to query the implementations for.
+	// interface_name defines the interface to query the implementations.
 	InterfaceName string `protobuf:"bytes,1,opt,name=interface_name,json=interfaceName,proto3" json:"interface_name,omitempty"`
 }
 
@@ -351,6 +351,7 @@ func _ReflectionService_ListImplementations_Handler(srv interface{}, ctx context
 	return interceptor(ctx, in, info, handler)
 }
 
+var ReflectionService_serviceDesc = _ReflectionService_serviceDesc
 var _ReflectionService_serviceDesc = grpc.ServiceDesc{
 	ServiceName: "cosmos.base.reflection.v1beta1.ReflectionService",
 	HandlerType: (*ReflectionServiceServer)(nil),

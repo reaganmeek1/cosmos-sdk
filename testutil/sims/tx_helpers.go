@@ -1,16 +1,22 @@
 package sims
 
 import (
+	"context"
 	"math/rand"
 	"testing"
 	"time"
 
+	types2 "github.com/cometbft/cometbft/api/cometbft/abci/v1"
 	"github.com/stretchr/testify/require"
-	types2 "github.com/tendermint/tendermint/abci/types"
-	"github.com/tendermint/tendermint/proto/tendermint/types"
+	"google.golang.org/protobuf/types/known/anypb"
+
+	"cosmossdk.io/core/header"
+	"cosmossdk.io/errors"
+	txsigning "cosmossdk.io/x/tx/signing"
 
 	"github.com/cosmos/cosmos-sdk/baseapp"
 	"github.com/cosmos/cosmos-sdk/client"
+	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	cryptotypes "github.com/cosmos/cosmos-sdk/crypto/types"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/types/simulation"
@@ -19,13 +25,20 @@ import (
 )
 
 // GenSignedMockTx generates a signed mock transaction.
-func GenSignedMockTx(r *rand.Rand, txConfig client.TxConfig, msgs []sdk.Msg, feeAmt sdk.Coins, gas uint64, chainID string, accNums, accSeqs []uint64, priv ...cryptotypes.PrivKey) (sdk.Tx, error) {
+func GenSignedMockTx(
+	r *rand.Rand,
+	txConfig client.TxConfig,
+	msgs []sdk.Msg,
+	feeAmt sdk.Coins,
+	gas uint64,
+	chainID string,
+	accNums, accSeqs []uint64,
+	priv ...cryptotypes.PrivKey,
+) (sdk.Tx, error) {
 	sigs := make([]signing.SignatureV2, len(priv))
 
 	// create a random length memo
 	memo := simulation.RandStringOfLength(r, simulation.RandIntBetween(r, 0, 100))
-
-	signMode := txConfig.SignModeHandler().DefaultMode()
 
 	// 1st round: set SignatureV2 with empty signatures, to set correct
 	// signer infos.
@@ -33,7 +46,7 @@ func GenSignedMockTx(r *rand.Rand, txConfig client.TxConfig, msgs []sdk.Msg, fee
 		sigs[i] = signing.SignatureV2{
 			PubKey: p.PubKey(),
 			Data: &signing.SingleSignatureData{
-				SignMode: signMode,
+				SignMode: txConfig.SignModeHandler().DefaultMode(),
 			},
 			Sequence: accSeqs[i],
 		}
@@ -44,6 +57,7 @@ func GenSignedMockTx(r *rand.Rand, txConfig client.TxConfig, msgs []sdk.Msg, fee
 	if err != nil {
 		return nil, err
 	}
+
 	err = tx.SetSignatures(sigs...)
 	if err != nil {
 		return nil, err
@@ -54,14 +68,22 @@ func GenSignedMockTx(r *rand.Rand, txConfig client.TxConfig, msgs []sdk.Msg, fee
 
 	// 2nd round: once all signer infos are set, every signer can sign.
 	for i, p := range priv {
-		signerData := authsign.SignerData{
+		anyPk, err := codectypes.NewAnyWithValue(p.PubKey())
+		if err != nil {
+			return nil, err
+		}
+
+		signerData := txsigning.SignerData{
 			Address:       sdk.AccAddress(p.PubKey().Address()).String(),
 			ChainID:       chainID,
 			AccountNumber: accNums[i],
 			Sequence:      accSeqs[i],
-			PubKey:        p.PubKey(),
+			PubKey:        &anypb.Any{TypeUrl: anyPk.TypeUrl, Value: anyPk.Value},
 		}
-		signBytes, err := txConfig.SignModeHandler().GetSignBytes(signMode, signerData, tx.GetTx())
+
+		signBytes, err := authsign.GetSignBytesAdapter(
+			context.Background(), txConfig.SignModeHandler(), txConfig.SignModeHandler().DefaultMode(), signerData,
+			tx.GetTx())
 		if err != nil {
 			panic(err)
 		}
@@ -70,10 +92,10 @@ func GenSignedMockTx(r *rand.Rand, txConfig client.TxConfig, msgs []sdk.Msg, fee
 			panic(err)
 		}
 		sigs[i].Data.(*signing.SingleSignatureData).Signature = sig
-		err = tx.SetSignatures(sigs...)
-		if err != nil {
-			panic(err)
-		}
+	}
+	err = tx.SetSignatures(sigs...)
+	if err != nil {
+		panic(err)
 	}
 
 	return tx.GetTx(), nil
@@ -84,9 +106,10 @@ func GenSignedMockTx(r *rand.Rand, txConfig client.TxConfig, msgs []sdk.Msg, fee
 // the parameter 'expPass' against the result. A corresponding result is
 // returned.
 func SignCheckDeliver(
-	t *testing.T, txCfg client.TxConfig, app *baseapp.BaseApp, header types.Header, msgs []sdk.Msg,
+	t *testing.T, txCfg client.TxConfig, app *baseapp.BaseApp, header header.Info, msgs []sdk.Msg,
 	chainID string, accNums, accSeqs []uint64, expSimPass, expPass bool, priv ...cryptotypes.PrivKey,
 ) (sdk.GasInfo, *sdk.Result, error) {
+	t.Helper()
 	tx, err := GenSignedMockTx(
 		rand.New(rand.NewSource(time.Now().UnixNano())),
 		txCfg,
@@ -113,20 +136,33 @@ func SignCheckDeliver(
 		require.Nil(t, res)
 	}
 
-	// Simulate a sending a transaction and committing a block
-	app.BeginBlock(types2.RequestBeginBlock{Header: header})
-	gInfo, res, err := app.SimDeliver(txCfg.TxEncoder(), tx)
+	bz, err := txCfg.TxEncoder()(tx)
+	require.NoError(t, err)
 
+	resBlock, err := app.FinalizeBlock(&types2.FinalizeBlockRequest{
+		Height: header.Height,
+		Txs:    [][]byte{bz},
+	})
+	require.NoError(t, err)
+
+	require.Equal(t, 1, len(resBlock.TxResults))
+	txResult := resBlock.TxResults[0]
+	finalizeSuccess := txResult.Code == 0
 	if expPass {
-		require.NoError(t, err)
-		require.NotNil(t, res)
+		require.True(t, finalizeSuccess)
 	} else {
-		require.Error(t, err)
-		require.Nil(t, res)
+		require.False(t, finalizeSuccess)
 	}
 
-	app.EndBlock(types2.RequestEndBlock{})
-	app.Commit()
+	_, err = app.Commit()
+	require.NoError(t, err)
+	gInfo := sdk.GasInfo{GasWanted: uint64(txResult.GasWanted), GasUsed: uint64(txResult.GasUsed)}
+	txRes := sdk.Result{Data: txResult.Data, Log: txResult.Log, Events: txResult.Events}
+	if finalizeSuccess {
+		err = nil
+	} else {
+		err = errors.ABCIError(txResult.Codespace, txResult.Code, txResult.Log)
+	}
 
-	return gInfo, res, err
+	return gInfo, &txRes, err
 }

@@ -7,6 +7,9 @@ import (
 	"math"
 	"sort"
 
+	"github.com/cosmos/gogoproto/proto"
+	"go.uber.org/mock/gomock"
+
 	"github.com/cosmos/cosmos-sdk/testutil/testdata"
 	sdk "github.com/cosmos/cosmos-sdk/types"
 	"github.com/cosmos/cosmos-sdk/x/auth/types"
@@ -40,7 +43,7 @@ func (suite *KeeperTestSuite) TestGRPCQueryAccounts() {
 			func(res *types.QueryAccountsResponse) {
 				addresses := make([]sdk.AccAddress, len(res.Accounts))
 				for i, acc := range res.Accounts {
-					var account types.AccountI
+					var account sdk.AccountI
 					err := suite.encCfg.InterfaceRegistry.UnpackAny(acc, &account)
 					suite.Require().NoError(err)
 					addresses[i] = account.GetAddress()
@@ -55,9 +58,7 @@ func (suite *KeeperTestSuite) TestGRPCQueryAccounts() {
 			suite.SetupTest() // reset
 
 			tc.malleate()
-			ctx := sdk.WrapSDKContext(suite.ctx)
-
-			res, err := suite.queryClient.Accounts(ctx, req)
+			res, err := suite.queryClient.Accounts(suite.ctx, req)
 
 			if tc.expPass {
 				suite.Require().NoError(err)
@@ -123,7 +124,7 @@ func (suite *KeeperTestSuite) TestGRPCQueryAccount() {
 			},
 			true,
 			func(res *types.QueryAccountResponse) {
-				var newAccount types.AccountI
+				var newAccount sdk.AccountI
 				err := suite.encCfg.InterfaceRegistry.UnpackAny(res.Account, &newAccount)
 				suite.Require().NoError(err)
 				suite.Require().NotNil(newAccount)
@@ -135,11 +136,10 @@ func (suite *KeeperTestSuite) TestGRPCQueryAccount() {
 	for _, tc := range testCases {
 		suite.Run(fmt.Sprintf("Case %s", tc.msg), func() {
 			suite.SetupTest() // reset
+			suite.acctsModKeeper.EXPECT().IsAccountsModuleAccount(gomock.Any(), gomock.Any()).Return(false).AnyTimes()
 
 			tc.malleate()
-			ctx := sdk.WrapSDKContext(suite.ctx)
-
-			res, err := suite.queryClient.Account(ctx, req)
+			res, err := suite.queryClient.Account(suite.ctx, req)
 
 			if tc.expPass {
 				suite.Require().NoError(err)
@@ -181,16 +181,26 @@ func (suite *KeeperTestSuite) TestGRPCQueryAccountAddressByID() {
 			func(res *types.QueryAccountAddressByIDResponse) {},
 		},
 		{
-			"valid request",
+			"valid account-id",
 			func() {
 				account := suite.accountKeeper.NewAccountWithAddress(suite.ctx, addr)
 				suite.accountKeeper.SetAccount(suite.ctx, account)
-				req = &types.QueryAccountAddressByIDRequest{Id: int64(account.GetAccountNumber())}
+				req = &types.QueryAccountAddressByIDRequest{AccountId: account.GetAccountNumber()}
 			},
 			true,
 			func(res *types.QueryAccountAddressByIDResponse) {
 				suite.Require().NotNil(res.AccountAddress)
 			},
+		},
+		{
+			"invalid request",
+			func() {
+				account := suite.accountKeeper.NewAccountWithAddress(suite.ctx, addr)
+				suite.accountKeeper.SetAccount(suite.ctx, account)
+				req = &types.QueryAccountAddressByIDRequest{Id: 1}
+			},
+			false,
+			func(res *types.QueryAccountAddressByIDResponse) {},
 		},
 	}
 
@@ -199,9 +209,7 @@ func (suite *KeeperTestSuite) TestGRPCQueryAccountAddressByID() {
 			suite.SetupTest() // reset
 
 			tc.malleate()
-			ctx := sdk.WrapSDKContext(suite.ctx)
-
-			res, err := suite.queryClient.AccountAddressByID(ctx, req)
+			res, err := suite.queryClient.AccountAddressByID(suite.ctx, req)
 
 			if tc.expPass {
 				suite.Require().NoError(err)
@@ -216,7 +224,7 @@ func (suite *KeeperTestSuite) TestGRPCQueryAccountAddressByID() {
 	}
 }
 
-func (suite *KeeperTestSuite) TestGRPCQueryParameters() {
+func (suite *KeeperTestSuite) TestGRPCQueryParams() {
 	var (
 		req       *types.QueryParamsRequest
 		expParams types.Params
@@ -242,9 +250,7 @@ func (suite *KeeperTestSuite) TestGRPCQueryParameters() {
 			suite.SetupTest() // reset
 
 			tc.malleate()
-			ctx := sdk.WrapSDKContext(suite.ctx)
-
-			res, err := suite.queryClient.Params(ctx, req)
+			res, err := suite.queryClient.Params(suite.ctx, req)
 
 			if tc.expPass {
 				suite.Require().NoError(err)
@@ -276,11 +282,11 @@ func (suite *KeeperTestSuite) TestGRPCQueryModuleAccounts() {
 			func(res *types.QueryModuleAccountsResponse) {
 				mintModuleExists := false
 				for _, acc := range res.Accounts {
-					var account types.AccountI
+					var account sdk.AccountI
 					err := suite.encCfg.InterfaceRegistry.UnpackAny(acc, &account)
 					suite.Require().NoError(err)
 
-					moduleAccount, ok := account.(types.ModuleAccountI)
+					moduleAccount, ok := account.(sdk.ModuleAccountI)
 
 					suite.Require().True(ok)
 					if moduleAccount.GetName() == "mint" {
@@ -299,11 +305,11 @@ func (suite *KeeperTestSuite) TestGRPCQueryModuleAccounts() {
 			func(res *types.QueryModuleAccountsResponse) {
 				mintModuleExists := false
 				for _, acc := range res.Accounts {
-					var account types.AccountI
+					var account sdk.AccountI
 					err := suite.encCfg.InterfaceRegistry.UnpackAny(acc, &account)
 					suite.Require().NoError(err)
 
-					moduleAccount, ok := account.(types.ModuleAccountI)
+					moduleAccount, ok := account.(sdk.ModuleAccountI)
 
 					suite.Require().True(ok)
 					if moduleAccount.GetName() == "falseCase" {
@@ -320,9 +326,7 @@ func (suite *KeeperTestSuite) TestGRPCQueryModuleAccounts() {
 			suite.SetupTest() // reset
 
 			tc.malleate()
-			ctx := sdk.WrapSDKContext(suite.ctx)
-
-			res, err := suite.queryClient.ModuleAccounts(ctx, req)
+			res, err := suite.queryClient.ModuleAccounts(suite.ctx, req)
 
 			if tc.expPass {
 				suite.Require().NoError(err)
@@ -330,14 +334,68 @@ func (suite *KeeperTestSuite) TestGRPCQueryModuleAccounts() {
 				// Make sure output is sorted alphabetically.
 				var moduleNames []string
 				for _, any := range res.Accounts {
-					var account types.AccountI
+					var account sdk.AccountI
 					err := suite.encCfg.InterfaceRegistry.UnpackAny(any, &account)
 					suite.Require().NoError(err)
-					moduleAccount, ok := account.(types.ModuleAccountI)
+					moduleAccount, ok := account.(sdk.ModuleAccountI)
 					suite.Require().True(ok)
 					moduleNames = append(moduleNames, moduleAccount.GetName())
 				}
 				suite.Require().True(sort.StringsAreSorted(moduleNames))
+			} else {
+				suite.Require().Error(err)
+				suite.Require().Nil(res)
+			}
+
+			tc.posttests(res)
+		})
+	}
+}
+
+func (suite *KeeperTestSuite) TestGRPCQueryModuleAccountByName() {
+	var req *types.QueryModuleAccountByNameRequest
+
+	testCases := []struct {
+		msg       string
+		malleate  func()
+		expPass   bool
+		posttests func(res *types.QueryModuleAccountByNameResponse)
+	}{
+		{
+			"success",
+			func() {
+				req = &types.QueryModuleAccountByNameRequest{Name: "mint"}
+			},
+			true,
+			func(res *types.QueryModuleAccountByNameResponse) {
+				var account sdk.AccountI
+				err := suite.encCfg.InterfaceRegistry.UnpackAny(res.Account, &account)
+				suite.Require().NoError(err)
+
+				moduleAccount, ok := account.(sdk.ModuleAccountI)
+				suite.Require().True(ok)
+				suite.Require().Equal(moduleAccount.GetName(), "mint")
+			},
+		},
+		{
+			"invalid module name",
+			func() {
+				req = &types.QueryModuleAccountByNameRequest{Name: "gover"}
+			},
+			false,
+			func(res *types.QueryModuleAccountByNameResponse) {
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		suite.Run(fmt.Sprintf("Case %s", tc.msg), func() {
+			suite.SetupTest() // reset
+			tc.malleate()
+			res, err := suite.queryClient.ModuleAccountByName(suite.ctx, req)
+			if tc.expPass {
+				suite.Require().NoError(err)
+				suite.Require().NotNil(res)
 			} else {
 				suite.Require().Error(err)
 				suite.Require().Nil(res)
@@ -442,4 +500,40 @@ func (suite *KeeperTestSuite) TestAddressStringToBytes() {
 			}
 		})
 	}
+}
+
+func (suite *KeeperTestSuite) TestQueryAccountInfo() {
+	_, pk, addr := testdata.KeyTestPubAddr()
+	acc := suite.accountKeeper.NewAccountWithAddress(suite.ctx, addr)
+	suite.Require().NoError(acc.SetPubKey(pk))
+	suite.Require().NoError(acc.SetSequence(10))
+	suite.accountKeeper.SetAccount(suite.ctx, acc)
+
+	res, err := suite.queryClient.AccountInfo(suite.ctx, &types.QueryAccountInfoRequest{
+		Address: addr.String(),
+	})
+
+	suite.Require().NoError(err)
+	suite.Require().NotNil(res.Info)
+	suite.Require().Equal(addr.String(), res.Info.Address)
+	suite.Require().Equal(acc.GetAccountNumber(), res.Info.AccountNumber)
+	suite.Require().Equal(acc.GetSequence(), res.Info.Sequence)
+	suite.Require().Equal("/"+proto.MessageName(pk), res.Info.PubKey.TypeUrl)
+	pkBz, err := proto.Marshal(pk)
+	suite.Require().NoError(err)
+	suite.Require().Equal(pkBz, res.Info.PubKey.Value)
+}
+
+func (suite *KeeperTestSuite) TestQueryAccountInfoWithoutPubKey() {
+	acc := suite.accountKeeper.NewAccountWithAddress(suite.ctx, addr)
+	suite.accountKeeper.SetAccount(suite.ctx, acc)
+
+	res, err := suite.queryClient.AccountInfo(suite.ctx, &types.QueryAccountInfoRequest{
+		Address: addr.String(),
+	})
+
+	suite.Require().NoError(err)
+	suite.Require().NotNil(res.Info)
+	suite.Require().Equal(addr.String(), res.Info.Address)
+	suite.Require().Nil(res.Info.PubKey)
 }

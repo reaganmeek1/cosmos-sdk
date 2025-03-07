@@ -3,7 +3,7 @@ package cli
 import (
 	flag "github.com/spf13/pflag"
 
-	"github.com/cosmos/cosmos-sdk/x/staking/types"
+	"cosmossdk.io/x/staking/types"
 )
 
 const (
@@ -15,12 +15,14 @@ const (
 	FlagSharesAmount        = "shares-amount"
 	FlagSharesFraction      = "shares-fraction"
 
-	FlagMoniker         = "moniker"
-	FlagEditMoniker     = "new-moniker"
-	FlagIdentity        = "identity"
-	FlagWebsite         = "website"
-	FlagSecurityContact = "security-contact"
-	FlagDetails         = "details"
+	FlagMoniker                  = "moniker"
+	FlagEditMoniker              = "new-moniker"
+	FlagIdentity                 = "identity"
+	FlagWebsite                  = "website"
+	FlagSecurityContact          = "security-contact"
+	FlagDetails                  = "details"
+	FlagMetadataProfilePicUri    = "metadata-profile-pic-uri"
+	FlagMetadataSocialHandleUris = "metadata-social-handle-uris"
 
 	FlagCommissionRate          = "commission-rate"
 	FlagCommissionMaxRate       = "commission-max-rate"
@@ -44,9 +46,9 @@ var (
 func init() {
 	fsShares.String(FlagSharesAmount, "", "Amount of source-shares to either unbond or redelegate as a positive integer or decimal")
 	fsShares.String(FlagSharesFraction, "", "Fraction of source-shares to either unbond or redelegate as a positive integer or decimal >0 and <=1")
-	fsValidator.String(FlagAddressValidator, "", "The Bech32 address of the validator")
-	fsRedelegation.String(FlagAddressValidatorSrc, "", "The Bech32 address of the source validator")
-	fsRedelegation.String(FlagAddressValidatorDst, "", "The Bech32 address of the destination validator")
+	fsValidator.String(FlagAddressValidator, "", "The address of the validator")
+	fsRedelegation.String(FlagAddressValidatorSrc, "", "The address of the source validator")
+	fsRedelegation.String(FlagAddressValidatorDst, "", "The address of the destination validator")
 }
 
 // FlagSetCommissionCreate Returns the FlagSet used for commission create.
@@ -89,6 +91,8 @@ func flagSetDescriptionEdit() *flag.FlagSet {
 	fs.String(FlagWebsite, types.DoNotModifyDesc, "The validator's (optional) website")
 	fs.String(FlagSecurityContact, types.DoNotModifyDesc, "The validator's (optional) security contact email")
 	fs.String(FlagDetails, types.DoNotModifyDesc, "The validator's (optional) details")
+	fs.String(FlagMetadataProfilePicUri, "", "The  validator's profile pic uri")
+	fs.StringArray(FlagMetadataSocialHandleUris, []string{}, "The  validator's social handles uris")
 
 	return fs
 }
@@ -97,18 +101,6 @@ func flagSetCommissionUpdate() *flag.FlagSet {
 	fs := flag.NewFlagSet("", flag.ContinueOnError)
 
 	fs.String(FlagCommissionRate, "", "The new commission rate percentage")
-
-	return fs
-}
-
-func flagSetDescriptionCreate() *flag.FlagSet {
-	fs := flag.NewFlagSet("", flag.ContinueOnError)
-
-	fs.String(FlagMoniker, "", "The validator's name")
-	fs.String(FlagIdentity, "", "The optional identity signature (ex. UPort or Keybase)")
-	fs.String(FlagWebsite, "", "The validator's (optional) website")
-	fs.String(FlagSecurityContact, "", "The validator's (optional) security contact email")
-	fs.String(FlagDetails, "", "The validator's (optional) details")
 
 	return fs
 }

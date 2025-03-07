@@ -1,23 +1,24 @@
 package baseapp_test
 
 import (
-	"os"
+	"context"
 	"testing"
 
+	abci "github.com/cometbft/cometbft/api/cometbft/abci/v1"
 	"github.com/stretchr/testify/require"
-	abci "github.com/tendermint/tendermint/abci/types"
-	"github.com/tendermint/tendermint/libs/log"
-	tmproto "github.com/tendermint/tendermint/proto/tendermint/types"
-	dbm "github.com/tendermint/tm-db"
+	"google.golang.org/protobuf/types/known/anypb"
 
+	coretesting "cosmossdk.io/core/testing"
 	"cosmossdk.io/depinject"
+	"cosmossdk.io/log"
+	txsigning "cosmossdk.io/x/tx/signing"
+
 	"github.com/cosmos/cosmos-sdk/client/tx"
 	"github.com/cosmos/cosmos-sdk/codec"
 	codectypes "github.com/cosmos/cosmos-sdk/codec/types"
 	"github.com/cosmos/cosmos-sdk/runtime"
 	"github.com/cosmos/cosmos-sdk/testutil/testdata"
 	"github.com/cosmos/cosmos-sdk/types/tx/signing"
-	authsigning "github.com/cosmos/cosmos-sdk/x/auth/signing"
 	authtx "github.com/cosmos/cosmos-sdk/x/auth/tx"
 )
 
@@ -27,9 +28,13 @@ func TestRegisterMsgService(t *testing.T) {
 		appBuilder *runtime.AppBuilder
 		registry   codectypes.InterfaceRegistry
 	)
-	err := depinject.Inject(makeMinimalConfig(), &appBuilder, &registry)
+	err := depinject.Inject(
+		depinject.Configs(
+			makeMinimalConfig(),
+			depinject.Supply(log.NewTestLogger(t)),
+		), &appBuilder, &registry)
 	require.NoError(t, err)
-	app := appBuilder.Build(log.NewTMLogger(log.NewSyncWriter(os.Stdout)), dbm.NewMemDB(), nil)
+	app := appBuilder.Build(coretesting.NewMemDB(), nil)
 
 	require.Panics(t, func() {
 		testdata.RegisterMsgServer(
@@ -55,10 +60,14 @@ func TestRegisterMsgServiceTwice(t *testing.T) {
 		appBuilder *runtime.AppBuilder
 		registry   codectypes.InterfaceRegistry
 	)
-	err := depinject.Inject(makeMinimalConfig(), &appBuilder, &registry)
+	err := depinject.Inject(
+		depinject.Configs(
+			makeMinimalConfig(),
+			depinject.Supply(log.NewTestLogger(t)),
+		), &appBuilder, &registry)
 	require.NoError(t, err)
-	db := dbm.NewMemDB()
-	app := appBuilder.Build(log.NewTMLogger(log.NewSyncWriter(os.Stdout)), db, nil)
+	db := coretesting.NewMemDB()
+	app := appBuilder.Build(db, nil)
 	testdata.RegisterInterfaces(registry)
 
 	// First time registering service shouldn't panic.
@@ -78,20 +87,60 @@ func TestRegisterMsgServiceTwice(t *testing.T) {
 	})
 }
 
+func TestHybridHandlerByMsgName(t *testing.T) {
+	// Setup baseapp and router.
+	var (
+		appBuilder *runtime.AppBuilder
+		registry   codectypes.InterfaceRegistry
+	)
+	err := depinject.Inject(
+		depinject.Configs(
+			makeMinimalConfig(),
+			depinject.Supply(log.NewTestLogger(t)),
+		), &appBuilder, &registry)
+	require.NoError(t, err)
+	db := coretesting.NewMemDB()
+	app := appBuilder.Build(db, nil)
+	testdata.RegisterInterfaces(registry)
+
+	testdata.RegisterMsgServer(
+		app.MsgServiceRouter(),
+		testdata.MsgServerImpl{},
+	)
+
+	handler := app.MsgServiceRouter().HybridHandlerByMsgName("testpb.MsgCreateDog")
+
+	require.NotNil(t, handler)
+	require.NoError(t, app.Init())
+	ctx := app.NewContext(true)
+	resp := new(testdata.MsgCreateDogResponse)
+	err = handler(ctx, &testdata.MsgCreateDog{
+		Dog:   &testdata.Dog{Name: "Spot"},
+		Owner: "me",
+	}, resp)
+	require.NoError(t, err)
+	require.Equal(t, resp.Name, "Spot")
+}
+
 func TestMsgService(t *testing.T) {
 	priv, _, _ := testdata.KeyTestPubAddr()
 
 	var (
 		appBuilder        *runtime.AppBuilder
-		cdc               codec.ProtoCodecMarshaler
+		cdc               codec.Codec
 		interfaceRegistry codectypes.InterfaceRegistry
 	)
-	err := depinject.Inject(makeMinimalConfig(), &appBuilder, &cdc, &interfaceRegistry)
+	err := depinject.Inject(
+		depinject.Configs(
+			makeMinimalConfig(),
+			depinject.Supply(log.NewNopLogger()),
+		), &appBuilder, &cdc, &interfaceRegistry)
 	require.NoError(t, err)
-	app := appBuilder.Build(log.NewNopLogger(), dbm.NewMemDB(), nil)
+	app := appBuilder.Build(coretesting.NewMemDB(), nil)
+	signingCtx := interfaceRegistry.SigningContext()
 
 	// patch in TxConfig instead of using an output from x/auth/tx
-	txConfig := authtx.NewTxConfig(cdc, authtx.DefaultSignModes)
+	txConfig := authtx.NewTxConfig(cdc, signingCtx.AddressCodec(), signingCtx.ValidatorAddressCodec(), authtx.DefaultSignModes)
 	// set the TxDecoder in the BaseApp for minimal tx simulations
 	app.SetTxDecoder(txConfig.TxDecoder())
 
@@ -100,9 +149,16 @@ func TestMsgService(t *testing.T) {
 		app.MsgServiceRouter(),
 		testdata.MsgServerImpl{},
 	)
-	_ = app.BeginBlock(abci.RequestBeginBlock{Header: tmproto.Header{Height: 1}})
+	_, err = app.FinalizeBlock(&abci.FinalizeBlockRequest{Height: 1})
+	require.NoError(t, err)
 
-	msg := testdata.MsgCreateDog{Dog: &testdata.Dog{Name: "Spot"}}
+	_, _, addr := testdata.KeyTestPubAddr()
+	addrStr, err := signingCtx.AddressCodec().BytesToString(addr)
+	require.NoError(t, err)
+	msg := testdata.MsgCreateDog{
+		Dog:   &testdata.Dog{Name: "Spot"},
+		Owner: addrStr,
+	}
 
 	txBuilder := txConfig.NewTxBuilder()
 	txBuilder.SetFeeAmount(testdata.NewTestFeeAmount())
@@ -125,13 +181,20 @@ func TestMsgService(t *testing.T) {
 	require.NoError(t, err)
 
 	// Second round: all signer infos are set, so each signer can sign.
-	signerData := authsigning.SignerData{
+	anyPk, err := codectypes.NewAnyWithValue(priv.PubKey())
+	require.NoError(t, err)
+
+	signerData := txsigning.SignerData{
 		ChainID:       "test",
 		AccountNumber: 0,
 		Sequence:      0,
+		PubKey: &anypb.Any{
+			TypeUrl: anyPk.TypeUrl,
+			Value:   anyPk.Value,
+		},
 	}
 	sigV2, err = tx.SignWithPrivKey(
-		txConfig.SignModeHandler().DefaultMode(), signerData,
+		context.TODO(), txConfig.SignModeHandler().DefaultMode(), signerData,
 		txBuilder, priv, txConfig, 0)
 	require.NoError(t, err)
 	err = txBuilder.SetSignatures(sigV2)
@@ -140,6 +203,7 @@ func TestMsgService(t *testing.T) {
 	// Send the tx to the app
 	txBytes, err := txConfig.TxEncoder()(txBuilder.GetTx())
 	require.NoError(t, err)
-	res := app.DeliverTx(abci.RequestDeliverTx{Tx: txBytes})
-	require.Equal(t, abci.CodeTypeOK, res.Code, "res=%+v", res)
+	res, err := app.FinalizeBlock(&abci.FinalizeBlockRequest{Height: 1, Txs: [][]byte{txBytes}})
+	require.NoError(t, err)
+	require.Equal(t, abci.CodeTypeOK, res.TxResults[0].Code, "res=%+v", res)
 }
